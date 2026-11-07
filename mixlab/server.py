@@ -14,10 +14,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mixlab as ml
 
-CFG = os.path.join(HERE, "presets.json")
+CFG = ml.default_config()
 LOCK = threading.Lock()
 AUDIO = {}          # hash -> float master (stereo)
-PLOTLY = (glob.glob(os.path.join(HERE, ".venv/lib/python*/site-packages/plotly/package_data/plotly.min.js")) or [None])[0]
+try:
+    import plotly
+    PLOTLY = os.path.join(os.path.dirname(plotly.__file__), "package_data", "plotly.min.js")
+except ImportError:
+    PLOTLY = None
 
 def mtime(p):
     try:
@@ -65,6 +69,8 @@ class H(BaseHTTPRequestHandler):
             if u.path in ("/", "/index.html"):
                 return self.send(200, open(os.path.join(HERE, "static/index.html"), "rb").read(), "text/html; charset=utf-8")
             if u.path == "/plotly.js":
+                if not PLOTLY:
+                    return self.send(404, b"plotly not installed", "text/plain")
                 return self.send(200, open(PLOTLY, "rb").read(), "application/javascript")
             if u.path == "/api/version":
                 return self.send(200, versions())

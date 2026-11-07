@@ -1,0 +1,6 @@
+#!/bin/bash
+# concert-mixlab CLI wrapper: ensures the venv exists, then runs mixlab.py with all arguments.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$ROOT/scripts/setup.sh"
+exec "${MIXLAB_HOME:-$HOME/.concert-mixlab}/.venv/bin/python" "$ROOT/mixlab/mixlab.py" "$@"

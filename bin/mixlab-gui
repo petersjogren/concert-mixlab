@@ -1,0 +1,27 @@
+#!/bin/bash
+# Start (or reuse) the concert-mixlab GUI server and open it in the browser.
+#   mixlab-gui            start + open browser
+#   mixlab-gui --no-open  start only
+#   mixlab-gui --stop     stop the server
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOME_DIR="${MIXLAB_HOME:-$HOME/.concert-mixlab}"
+PORT="${MIXLAB_PORT:-8765}"
+URL="http://127.0.0.1:$PORT"
+LOG="$HOME_DIR/server.log"
+
+if [ "${1:-}" = "--stop" ]; then
+  pkill -f "mixlab/server.py --port $PORT" && echo "stopped" || echo "not running"; exit 0
+fi
+
+"$ROOT/scripts/setup.sh"
+if ! curl -s "$URL/api/version" >/dev/null 2>&1; then
+  mkdir -p "$HOME_DIR"
+  nohup "$HOME_DIR/.venv/bin/python" "$ROOT/mixlab/server.py" --port "$PORT" > "$LOG" 2>&1 &
+  for _ in $(seq 1 50); do curl -s "$URL/api/version" >/dev/null 2>&1 && break; sleep 0.2; done
+fi
+curl -s "$URL/api/version" >/dev/null 2>&1 || { echo "GUI failed to start, see $LOG" >&2; tail -20 "$LOG" >&2; exit 1; }
+if [ "${1:-}" != "--no-open" ]; then
+  if command -v open >/dev/null; then open "$URL"; elif command -v xdg-open >/dev/null; then xdg-open "$URL"; fi
+fi
+echo "concert-mixlab GUI: $URL   (data: $HOME_DIR, log: $LOG)"

@@ -1,0 +1,9 @@
+{
+  "name": "concert-mixlab",
+  "displayName": "Concert Mixlab",
+  "version": "0.2.0",
+  "description": "Mix, analyse and A/B multi-mic concert recordings (orchestra, choir, soloists): EQ, mic balance, time alignment, stereo image and loudness, with a live GUI that Claude can drive.",
+  "author": { "name": "Peter Sjögren" },
+  "license": "MIT",
+  "keywords": ["audio", "mixing", "classical", "concert", "recording", "eq", "stereo", "ffmpeg"]
+}

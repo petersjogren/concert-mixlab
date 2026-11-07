@@ -1,0 +1,12 @@
+{
+  "name": "concert-mixlab",
+  "description": "Marketplace containing the concert-mixlab plugin",
+  "owner": { "name": "Peter Sjögren" },
+  "plugins": [
+    {
+      "name": "concert-mixlab",
+      "source": "./",
+      "description": "Mix, analyse and A/B multi-mic concert recordings with a live GUI that Claude can drive."
+    }
+  ]
+}

@@ -19,6 +19,21 @@ from scipy.ndimage import maximum_filter1d
 
 SR = 48000
 
+# ----------------------------------------------------------------------------- locations
+# Code lives in the plugin/repo; mutable data (presets.json, state.json, venv) lives in MIXLAB_HOME
+# so plugin updates never wipe the user's presets.
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MIXLAB_HOME = os.path.expanduser(os.environ.get("MIXLAB_HOME", "~/.concert-mixlab"))
+
+def default_config():
+    cfg = os.path.expanduser(os.environ.get("MIXLAB_CONFIG", os.path.join(MIXLAB_HOME, "presets.json")))
+    if not os.path.exists(cfg):
+        import shutil
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
+        shutil.copy(os.path.join(REPO, "presets.example.json"), cfg)
+        print(f"[mixlab] created {cfg} from presets.example.json — set source_dir to your recordings folder", file=sys.stderr)
+    return cfg
+
 # ----------------------------------------------------------------------------- config
 def parse_time(t):
     t = str(t)
@@ -735,6 +750,8 @@ def cmd_verify(args):
 
 def cmd_list(args):
     cfg = load_config(args.config); raw = json.load(open(args.config)); st = read_state(args.config)
+    print(f"config: {os.path.abspath(args.config)}\nsource_dir: {cfg['source_dir']}"
+          f"{'' if os.path.isdir(cfg['source_dir']) else '   <-- MISSING, fix with: mixlab source /path/to/recordings'}\n")
     for n, p in cfg["resolved"].items():
         ext = raw["presets"][n].get("extends")
         print(f"{n:16s} {'(extends ' + ext + ')' if ext else '':22s} {p.get('description', '')}")
@@ -800,10 +817,26 @@ def cmd_state(args):
         ex = json.load(open(args.config)).get("excerpts", {})[args.excerpt]; kw["start"], kw["dur"] = ex[0], ex[1]
     print(json.dumps(write_state(args.config, **kw) if kw else read_state(args.config), indent=2))
 
+def cmd_source(args):
+    """Set the recordings folder and/or list its audio files."""
+    raw = json.load(open(args.config))
+    if args.dir:
+        raw["source_dir"] = os.path.abspath(os.path.expanduser(args.dir))
+        json.dump(raw, open(args.config, "w"), indent=2)
+    if args.excerpt:
+        name, start, dur = args.excerpt
+        raw.setdefault("excerpts", {})[name] = [start, float(dur)]; json.dump(raw, open(args.config, "w"), indent=2)
+    src = load_config(args.config)["source_dir"]; print(f"source_dir: {src}")
+    for f in sorted(os.listdir(src)) if os.path.isdir(src) else []:
+        if f.lower().endswith((".wav", ".flac", ".aif", ".aiff", ".mp3", ".m4a")):
+            info = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=channels,sample_rate:format=duration",
+                                   "-of", "csv=p=0", os.path.join(src, f)], capture_output=True, text=True).stdout.split()
+            print(f"  {f:32s} {' '.join(info)}")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    default_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json")
+    default_cfg = default_config()
     def cfgarg(p): p.add_argument("--config", default=default_cfg)
     def common(p, preset_many=False):
         cfgarg(p)
@@ -813,7 +846,7 @@ def main():
             p.add_argument("--presets", help="comma list (default: all)")
         else:
             p.add_argument("--preset", required=True)
-    p = sp.add_parser("report", help="HTML report"); common(p, True); p.add_argument("--out", default="out"); p.add_argument("--render", action="store_true", help="also write each preset's master WAV")
+    p = sp.add_parser("report", help="HTML report"); common(p, True); p.add_argument("--out", default=os.path.join(MIXLAB_HOME, "reports", "latest")); p.add_argument("--render", action="store_true", help="also write each preset's master WAV")
     p = sp.add_parser("render", help="render one preset to WAV"); common(p); p.add_argument("--out", required=True); p.add_argument("--fade", type=float, default=0)
     p = sp.add_parser("ffmpeg", help="print equivalent ffmpeg command"); common(p); p.add_argument("--out", default="out.wav")
     p = sp.add_parser("verify", help="python vs ffmpeg null test"); common(p)
@@ -828,6 +861,8 @@ def main():
     p = sp.add_parser("state", help="read/set GUI state"); cfgarg(p)
     p.add_argument("--start", dest="set_start"); p.add_argument("--dur", dest="set_dur", type=float)
     p.add_argument("--excerpt", help="name from presets.json 'excerpts'"); p.add_argument("--compare", help="comma list of presets"); p.add_argument("--edit")
+    p = sp.add_parser("source", help="set recordings folder / add excerpt / list files"); cfgarg(p); p.add_argument("dir", nargs="?")
+    p.add_argument("--excerpt", nargs=3, metavar=("NAME", "START", "DUR"), help="save a named excerpt, e.g. --excerpt Kyrie 22:10 150")
     a = ap.parse_args()
     if hasattr(a, "dur") and a.cmd != "state":
         st = read_state(a.config)
@@ -835,7 +870,7 @@ def main():
         if a.dur is None: a.dur = float(st.get("dur", 60.0))
         if a.dur == 0: a.dur = None
     dict(report=cmd_report, render=cmd_render, ffmpeg=cmd_ffmpeg, verify=cmd_verify, metrics=cmd_metrics, list=cmd_list,
-         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state)[a.cmd](a)
+         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state, source=cmd_source)[a.cmd](a)
 
 if __name__ == "__main__":
     main()
