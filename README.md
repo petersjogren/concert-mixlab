@@ -2,6 +2,14 @@
 
 Quantify how mix/EQ settings change a multi-mic concert master: spectrum, EQ, mic usage, stereo image, loudness/limiter.
 
+## GUI
+`./gui.sh` → http://127.0.0.1:8765. Excerpt picker, compare presets, live editor (sliders save to presets.json),
+all analysis plots, gapless loudness-matched A/B playback (space = play, 1–9 = switch). Follows external edits
+to presets.json/state.json (e.g. from Claude Code via the `concert-mixlab` skill in `skill/SKILL.md`).
+
+## Agent / CLI control
+`mixlab.py list | show | clone | set | delete | state | metrics` — see `skill/SKILL.md`.
+
 ```bash
 cd ~/GitHubProjects/concert-mixlab
 P=.venv/bin/python
