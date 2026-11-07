@@ -156,6 +156,7 @@ layer:  …                                                                     
 | `peak` | `f`, `oct` (bandwidth in octaves), `g` (dB) |
 | `highshelf` / `lowshelf` | `f`, `g`, `slope` (0.1–1) |
 | any filter | `"bypass": true` |
+| `side_filters` (per layer) | the same filter types applied to the **Side** signal only (M/S EQ): frequency-dependent width with the mono sum unchanged. A side low-shelf boost gives **bass shuffling**. |
 
 Other fields:
 - **Layer:** `invert` (polarity Ø), `mute`, `width` (1 = unchanged, 0 = mono, >1 = wider).

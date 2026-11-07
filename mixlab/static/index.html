@@ -170,23 +170,35 @@ function renderEditor(){
     ctl(c,'delay ms',L.delay_ms??0,{min:0,max:40,step:0.1},v=>L.delay_ms=v);
     L.inputs.forEach((i,k)=>{ctl(c,`in${k+1} pan`,i.pan??0,{min:-1,max:1,step:0.01},v=>i.pan=v);ctl(c,`in${k+1} dB`,i.gain_db??0,{min:-24,max:12,step:0.1},v=>i.gain_db=v)});
     const n=document.createElement('div');n.className='note';n.textContent=L.inputs.map((i,k)=>`in${k+1}: ${i.file}[${i.ch??0}]`).join(' · ');c.appendChild(n);
-    (L.filters=L.filters||[]).forEach((f,j)=>{
+    const filterList=(key,label)=>{(L[key]=L[key]||[]).forEach((f,j)=>{
       const fd=document.createElement('div');fd.className='filt';
-      fd.innerHTML=`<div class="hd"><b>#${j}</b><select>${Object.keys(FDEF).map(t=>`<option ${t==f.type?'selected':''}>${t}</option>`).join('')}</select>
+      fd.innerHTML=`<div class="hd"><b>${label}#${j}</b><select>${Object.keys(FDEF).map(t=>`<option ${t==f.type?'selected':''}>${t}</option>`).join('')}</select>
         <label><input type="checkbox" ${f.bypass?'checked':''}> bypass</label><button title="remove">✕</button></div>`;
       const [sel]=fd.querySelectorAll('select');const [byp]=fd.querySelectorAll('input');
-      sel.onchange=()=>{L.filters[j]=Object.assign({type:sel.value},FDEF[sel.value],{f:f.f});changed();renderEditor()};
+      sel.onchange=()=>{L[key][j]=Object.assign({type:sel.value},FDEF[sel.value],{f:f.f});changed();renderEditor()};
       byp.onchange=()=>{if(byp.checked)f.bypass=true;else delete f.bypass;changed()};
-      fd.querySelector('button').onclick=()=>{L.filters.splice(j,1);changed();renderEditor()};
+      fd.querySelector('button').onclick=()=>{L[key].splice(j,1);if(!L[key].length&&key!=='filters')delete L[key];changed();renderEditor()};
       ctl(fd,'freq Hz',f.f,{min:20,max:20000,step:1,log:true},v=>f.f=v);
       if('g' in FDEF[f.type])ctl(fd,'gain dB',f.g??0,{min:-18,max:18,step:0.1},v=>f.g=v);
       if(f.type=='peak')ctl(fd,'width oct',f.oct??1,{min:0.1,max:4,step:0.05},v=>f.oct=v);
       if(f.type.endsWith('shelf'))ctl(fd,'slope',f.slope??0.5,{min:0.1,max:1,step:0.05},v=>f.slope=v);
       if(f.type.endsWith('pass'))ctl(fd,'Q',f.q??0.707,{min:0.3,max:4,step:0.01},v=>f.q=v);
       c.appendChild(fd);
-    });
+    })};
+    filterList('filters','');
     const add=document.createElement('button');add.textContent='+ filter';add.style.marginTop='6px';
     add.onclick=()=>{L.filters.push({type:'peak',...FDEF.peak});changed();renderEditor()};c.appendChild(add);
+    // M/S: filters on the Side signal only (frequency-dependent width, e.g. bass shuffling)
+    const sh=document.createElement('div');sh.className='note';sh.style.marginTop='10px';
+    sh.innerHTML='<b style="color:var(--fg)">Side EQ (M/S)</b>: filters applied to the Side signal only, so they change width per frequency and leave the mono sum untouched. A low-shelf boost = bass shuffling (wider, more enveloping bass).';
+    c.appendChild(sh);
+    filterList('side_filters','S');
+    const sb=document.createElement('div');sb.style.cssText='display:flex;gap:5px;margin-top:6px';
+    sb.innerHTML='<button>+ side filter</button><button title="Side low-shelf 200 Hz +3 dB, slope 0.7">+ bass shuffle</button>';
+    const [b1,b2]=sb.querySelectorAll('button');
+    b1.onclick=()=>{(L.side_filters=L.side_filters||[]).push({type:'peak',...FDEF.peak});changed();renderEditor()};
+    b2.onclick=()=>{(L.side_filters=L.side_filters||[]).push({type:'lowshelf',f:200,g:3,slope:0.7});changed();renderEditor()};
+    c.appendChild(sb);
     ed.appendChild(c);
   });
 }
@@ -246,8 +258,9 @@ function draw(d){
   Plotly.react('p_spec',[...P.map(p=>({x:p.spectrum.f,y:p.spectrum.db,name:p.name,line:{color:colorOf(p.name)}})),...guide],lay('Master spectrum (1/6 oct, 0 dB = 0.5–2 kHz)',{xaxis:FX,yaxis:{range:[-75,15],title:'dB',gridcolor:'#333a46'}}),{responsive:true});
   const r0=P[0];Plotly.react('p_delta',P.slice(1).map(p=>({x:p.spectrum.f,y:p.spectrum.db.map((v,i)=>v-(r0.spectrum.db[i]??NaN)),name:`${p.name} − ${r0.name}`,line:{color:colorOf(p.name)}})),
     lay(`Tonal change vs '${r0.name}'`,{xaxis:FX,yaxis:{title:'dB',gridcolor:'#333a46',zerolinecolor:'#aaa'}}),{responsive:true});
-  const eqT=[];d.layers.forEach((ln,li)=>Object.entries(d.eq[ln]).forEach(([pn,c])=>eqT.push({x:c.f,y:c.db,name:`${ln} · ${pn}`,line:{color:colorOf(pn),dash:['solid','dot','dash','dashdot'][li%4]}})));
-  Plotly.react('p_eq',eqT,lay('EQ + gain per layer (solid/dotted = layer)',{xaxis:FX,yaxis:{title:'dB',gridcolor:'#333a46'}}),{responsive:true});
+  const eqT=[];d.layers.forEach((ln,li)=>Object.entries(d.eq[ln]).forEach(([pn,c])=>{const side=pn.endsWith(' (side)'),base=side?pn.slice(0,-7):pn;
+    eqT.push({x:c.f,y:c.db,name:`${ln} · ${pn}`,line:{color:colorOf(base),width:side?1.5:2,dash:side?'dot':['solid','dashdot','dash','longdash'][li%4]}})}));
+  Plotly.react('p_eq',eqT,lay('EQ + gain per layer (dotted = Side-only M/S EQ)',{xaxis:FX,yaxis:{title:'dB',gridcolor:'#333a46'}}),{responsive:true});
   Plotly.react('p_raw',d.raw.map((r,i)=>({x:r.f,y:r.db,name:r.name,line:{color:['#9aa5b8','#6c7a92','#e0b36a','#b8864a'][i%4]}})),lay('Raw inputs (normalised)',{xaxis:FX,yaxis:{range:[-75,15],gridcolor:'#333a46'}}),{responsive:true});
   const oct=d.oct.map(f=>f<1000?`${f}`:`${f/1000}k`);const shareT=[];
   P.forEach((p,pi)=>d.layers.forEach((ln,li)=>shareT.push({type:'bar',x:oct,y:p.contrib.share[ln].map(v=>v*100),name:`${ln}`,legendgroup:ln,showlegend:pi==0,offsetgroup:p.name,
@@ -419,7 +432,8 @@ function renderDaw(n){
       (b.width!==1?`<span class="pill">width ${(b.width*100).toFixed(0)}% · M/S side ${b.side_gain_db==null?'−∞':f1(b.side_gain_db)} dB</span>`:'<span class="pill">width 100%</span>')+
       `<table style="margin-top:6px"><tr><th>#</th><th class="l">type</th><th>freq Hz</th><th>gain dB</th><th>Q</th><th class="l">notes</th></tr>`+
       (b.eq.length?b.eq.map((e,k)=>`<tr style="${e.bypass?'opacity:.45':''}"><td>${k+1}</td><td class="l">${e.kind}</td><td><b>${e.freq_hz}</b></td><td><b>${e.gain_db==null?'':f1(e.gain_db)}</b></td><td><b>${e.q}</b></td><td class="l mut">${
-        e.bypass?'BYPASSED · ':''}${e.bw_oct!=null?`= ${e.bw_oct} oct bandwidth`:e.slope!=null?`slope ${e.slope}; freq = half-gain point (RBJ)`:'Butterworth'}</td></tr>`).join(''):'<tr><td colspan="6" class="l mut">no EQ</td></tr>')+'</table></div>'});
+        e.bypass?'BYPASSED · ':''}${e.bw_oct!=null?`= ${e.bw_oct} oct bandwidth`:e.slope!=null?`slope ${e.slope}; freq = half-gain point (RBJ)`:'Butterworth'}</td></tr>`).join(''):'<tr><td colspan="6" class="l mut">no EQ</td></tr>')+
+      ((b.side_eq||[]).length?b.side_eq.map((e,k)=>`<tr style="background:#2a2440;${e.bypass?'opacity:.45':''}"><td>S${k+1}</td><td class="l">${e.kind} <b>(Side only, M/S EQ)</b></td><td><b>${e.freq_hz}</b></td><td><b>${e.gain_db==null?'':f1(e.gain_db)}</b></td><td><b>${e.q}</b></td><td class="l mut">${e.bypass?'BYPASSED · ':''}EQ in M/S mode, Side channel; mono sum unchanged</td></tr>`).join(''):'')+'</table></div>'});
   const m=d.master;h+=`<h4>3 · Master</h4><table><tr><th class="l">gain into limiter</th><th class="l">limiter ceiling</th><th class="l">attack / look-ahead</th><th class="l">release</th></tr><tr><td class="l"><b>${f1(m.gain_before_limiter_db)} dB</b> <span class="mut">(limiter input/drive, or a gain plugin before it)</span></td>`+
     (m.limiter?`<td class="l"><b>${m.limiter.ceiling_dbfs} dBFS</b></td><td class="l"><b>${m.limiter.attack_lookahead_ms} ms</b></td><td class="l"><b>${m.limiter.release_ms} ms</b></td>`:'<td class="l" colspan="3">off</td>')+'</tr></table>';
   h+=`<div class="note">Session 48 kHz · pan law −3 dB constant power (hard-panned tracks are unaffected) · bells: Q is the analog equivalent of the octave bandwidth · shelves: frequency is the half-gain point; shelf "Q"/slope conventions differ between EQ plugins, so match the curve by ear or with the EQ plot · HPF = 12 dB/oct · this limiter is sample-peak; a true-peak limiter will catch slightly more.</div>`;

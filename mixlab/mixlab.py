@@ -140,8 +140,8 @@ def biquad(f):
         raise ValueError(f"unknown filter type {t}")
     return np.array(b + a) / a[0]
 
-def layer_sos(layer):
-    fl = [f for f in layer.get("filters", []) if not f.get("bypass")]
+def layer_sos(layer, key="filters"):
+    fl = [f for f in layer.get(key, []) if not f.get("bypass")]
     return np.array([biquad(f) for f in fl]) if fl else None
 
 def filter_to_ffmpeg(f):
@@ -195,6 +195,11 @@ def render_layers(preset, src_dir, start, dur):
         sos = layer_sos(layer)
         if sos is not None:
             Y = signal.sosfilt(sos, Y, axis=0)
+        ssos = layer_sos(layer, "side_filters")          # M/S: filters on the Side signal only (e.g. bass shuffling)
+        if ssos is not None:
+            Mid, Side = (Y[:, 0] + Y[:, 1]) / 2, (Y[:, 0] - Y[:, 1]) / 2
+            Side = signal.sosfilt(ssos, Side)
+            Y = np.stack([Mid + Side, Mid - Side], axis=1)
         outs[layer["name"]] = Y * db2lin(layer.get("gain_db", 0.0))
         if len(_layer_cache) >= 12:
             _layer_cache.pop(next(iter(_layer_cache)))
@@ -266,6 +271,13 @@ def ffmpeg_command(preset, src_dir, start, dur, out):
             chain.append(f"adelay={layer['delay_ms']}ms|{layer['delay_ms']}ms")
         chain += [filter_to_ffmpeg(f) for f in layer.get("filters", []) if not f.get("bypass")]
         chain.append(f"volume={layer.get('gain_db', 0.0)}dB")
+        sf = [filter_to_ffmpeg(f) for f in layer.get("side_filters", []) if not f.get("bypass")]
+        if sf:   # M/S encode -> filter Side -> decode
+            chain += ["pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0-0.5*c1", "channelsplit=channel_layout=stereo"]
+            graph.append(src + ",".join(chain) + f"[M{k}][S{k}]")
+            graph.append(f"[S{k}]" + ",".join(sf) + f"[Sf{k}]")
+            graph.append(f"[M{k}][Sf{k}]amerge=inputs=2,pan=stereo|c0=c0+c1|c1=c0-c1[L{k}]"); labels.append(f"[L{k}]")
+            continue
         graph.append(src + ",".join(chain) + f"[L{k}]"); labels.append(f"[L{k}]")
     m = preset.get("master", {})
     tail = f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0,volume={m.get('gain_db', 0.0)}dB"
@@ -619,6 +631,9 @@ def analysis_json(results, raw=None, align=None):
         for L in r["preset"]["layers"]:
             if not L.get("mute"):
                 w, d = eq_curve(L); eq[L["name"]][r["name"]] = dict(f=w.round(1).tolist(), db=d.round(2).tolist())
+                if layer_sos(L, "side_filters") is not None:
+                    _, h = signal.sosfreqz(layer_sos(L, "side_filters"), worN=w, fs=SR)
+                    eq[L["name"]][r["name"] + " (side)"] = dict(f=w.round(1).tolist(), db=(20 * np.log10(np.abs(h) + 1e-12) + d).round(2).tolist())
     out = dict(oct=OCT, guide=[[lo, hi, g] for (lo, hi), g in GUIDE.items()], layers=lnames, eq=eq, raw=raw or [], align=align or [],
                presets=[])
     for r in results:
@@ -691,7 +706,7 @@ def daw_recipe(preset):
         w = L.get("width", 1.0)
         buses.append(dict(name=L["name"], muted=False, delay_ms=L.get("delay_ms", 0.0), polarity_inverted=bool(L.get("invert")),
                           delay_samples_48k=int(round(L.get("delay_ms", 0.0) * SR / 1000)),
-                          eq=[daw_eq_band(f) for f in L.get("filters", [])], fader_db=lg, width=w,
+                          eq=[daw_eq_band(f) for f in L.get("filters", [])], side_eq=[daw_eq_band(f) for f in L.get("side_filters", [])], fader_db=lg, width=w,
                           side_gain_db=None if w == 1 else (round(20 * math.log10(w), 1) if w > 0 else float("-inf"))))
     m = preset.get("master", {}); c = m.get("limiter_ceiling")
     master = dict(gain_before_limiter_db=m.get("gain_db", 0.0),
@@ -715,6 +730,9 @@ def daw_text(name, r):
             g = "" if e["gain_db"] is None else f"{e['gain_db']:+.1f} dB"
             extra = f"  (= {e['bw_oct']:g} oct)" if "bw_oct" in e else f"  (slope {e['slope']:g}, freq = half-gain point)" if "slope" in e else ""
             out.append(f"      EQ{k + 1}: {e['kind']:<22} {e['freq_hz']:>7g} Hz  {g:>9}  Q {e['q']:<5}{extra}{'   [BYPASSED]' if e['bypass'] else ''}")
+        for k, e in enumerate(b.get("side_eq", [])):
+            g = "" if e["gain_db"] is None else f"{e['gain_db']:+.1f} dB"
+            out.append(f"      SIDE-only EQ{k + 1} (M/S EQ, Side channel): {e['kind']:<12} {e['freq_hz']:>7g} Hz  {g:>9}  Q {e['q']:<5}{'   [BYPASSED]' if e['bypass'] else ''}")
     m = r["master"]; out.append(""); out.append("3) MASTER")
     out.append(f"   gain into limiter {m['gain_before_limiter_db']:+.2f} dB (use limiter input/drive or a gain plugin BEFORE it)")
     if m["limiter"]:
@@ -936,9 +954,11 @@ def cmd_show(args):
     cfg = load_config(args.config); p = cfg["resolved"][args.preset]
     if args.ffmpeg_style:
         for L in p["layers"]:
-            print(f"[{L['name']}]{' MUTED' if L.get('mute') else ''} width {L.get('width', 1)} delay {L.get('delay_ms', 0)} ms gain {L.get('gain_db', 0):+} dB")
+            print(f"[{L['name']}]{' MUTED' if L.get('mute') else ''}{' Ø INVERTED' if L.get('invert') else ''} width {L.get('width', 1)} delay {L.get('delay_ms', 0)} ms gain {L.get('gain_db', 0):+} dB")
             for j, f in enumerate(L.get("filters", [])):
                 print(f"   filters.{j}: {describe_filter(f)}{' (bypass)' if f.get('bypass') else ''}")
+            for j, f in enumerate(L.get("side_filters", [])):
+                print(f"   side_filters.{j} (Side only, M/S): {describe_filter(f)}{' (bypass)' if f.get('bypass') else ''}")
         print(f"[master] {json.dumps(p.get('master', {}))}")
     else:
         print(json.dumps(p, indent=2))

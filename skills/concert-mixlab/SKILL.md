@@ -22,6 +22,7 @@ The GUI polls both and re-analyses within about 2 s. Every CLI edit is therefore
   - `peak` {f, oct, g}
   - `highshelf`/`lowshelf` {f, g, slope}
   - any filter can carry `"bypass": true`
+- `side_filters` (per layer): same filter types applied to the Side signal only (M/S); changes width per frequency, mono sum untouched. Bass shuffling = `side_filters=[{"type":"lowshelf","f":200,"g":3..4,"slope":0.7}]` (this recording: close-pair LF corr 0.86–0.89 → ~0.6 at 63 Hz with +4 dB).
 - Biquads are the RBJ formulas ffmpeg uses, so `M ffmpeg` reproduces a preset exactly (`M verify` should report a null below −60 dB).
 - Typical layers are `close` (spaced spot pair, hard L/R) and `camera` (stereo recorder/camera mic, used as ambience). Run `M show --preset raw --short` to see the real ones.
 
