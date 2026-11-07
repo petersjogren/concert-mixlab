@@ -1,0 +1,251 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>concert-mixlab</title>
+<script src="/plotly.js"></script>
+<style>
+:root{--bg:#15171c;--panel:#1d2027;--card:#252932;--fg:#e6e8ee;--mut:#8e95a5;--acc:#5aa9ff;--bd:#343946;--good:#1f5f3a;--warn:#6b5417;--bad:#6e2626}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px -apple-system,Helvetica,sans-serif}
+header{display:flex;gap:10px;align-items:center;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:15px;margin:0 8px 0 0}input,select,button{background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:4px;padding:3px 6px;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--acc)}button.on{background:var(--acc);color:#000;border-color:var(--acc)}
+#wrap{display:flex;height:calc(100vh - 92px)}#side{width:400px;min-width:400px;overflow-y:auto;background:var(--panel);border-right:1px solid var(--bd);padding:10px}
+#main{flex:1;overflow-y:auto;padding:10px}.card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:8px;margin-bottom:10px}
+.card h3{margin:0 0 6px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.row{display:grid;grid-template-columns:78px 1fr 64px;gap:6px;align-items:center;margin:3px 0}.row label{color:var(--mut)}
+.row input[type=number]{width:64px}input[type=range]{width:100%}
+.filt{border-top:1px dashed var(--bd);padding-top:5px;margin-top:5px}.filt .hd{display:flex;gap:5px;align-items:center}
+#transport{display:flex;gap:8px;align-items:center;padding:6px 12px;background:var(--panel);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+#seek{width:320px}.pbtn{border-width:2px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:10px}
+.plot{background:var(--card);border:1px solid var(--bd);border-radius:6px;height:340px}.plot.tall{height:420px}
+table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid var(--bd);padding:3px 6px;text-align:right}th{background:#2c313c}td.l,th.l{text-align:left}
+td.good{background:var(--good)}td.warn{background:var(--warn)}td.bad{background:var(--bad)}.mut{color:var(--mut)}#status{color:var(--mut);margin-left:auto}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}.chk{display:flex;gap:10px;flex-wrap:wrap}
+pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;padding:6px;border-radius:4px;max-height:160px;overflow:auto}
+.note{color:var(--mut);font-size:11px;margin:4px 0}
+</style></head><body>
+<header>
+  <h1>🎻 concert-mixlab</h1>
+  Excerpt <select id="excerpt"></select>
+  start <input id="start" size="7"> dur <input id="dur" size="5"> s
+  <button id="analyze">Analyse</button>
+  <label><input type="checkbox" id="auto" checked> auto</label>
+  <span id="status">loading…</span>
+</header>
+<div id="transport">
+  <button id="play">▶ Play</button><input type="range" id="seek" min="0" max="1000" value="0"><span id="time">0:00</span>
+  <span class="mut">listen:</span><span id="pbtns"></span>
+  <label title="Match every preset to the quietest one so you compare tone, not loudness"><input type="checkbox" id="lmatch" checked> loudness-match</label>
+  <span class="mut">space = play/stop · 1-9 = switch preset</span>
+</div>
+<div id="wrap">
+  <div id="side">
+    <div class="card"><h3>Compare</h3><div id="compare" class="chk"></div></div>
+    <div class="card"><h3>Edit preset <span><select id="edit"></select></span></h3>
+      <div style="display:flex;gap:5px;margin-bottom:6px"><button id="clone">Clone…</button><button id="del">Delete</button><button id="ffm">ffmpeg cmd</button></div>
+      <input id="desc" style="width:100%" placeholder="description">
+      <div class="note">Edits save to presets.json immediately (preset becomes standalone, no <i>extends</i>). Claude Code can edit the same file via <code>mixlab.py set</code>; the GUI follows.</div>
+      <pre id="ffout" style="display:none"></pre>
+    </div>
+    <div id="editor"></div>
+  </div>
+  <div id="main">
+    <div class="card"><h3>Master summary</h3><div id="summary"></div><div class="note">Centroid ↑ = brighter. L/R corr 0.3–0.7 ≈ natural orchestral image; near 0 = very wide (hole-in-middle risk). GR = limiter gain reduction.</div></div>
+    <div class="card"><h3>Tonal balance (dB relative to 0.5–2 kHz) vs rough guide</h3><div id="tonal"></div></div>
+    <div class="grid">
+      <div class="plot tall" id="p_spec"></div><div class="plot tall" id="p_delta"></div>
+      <div class="plot" id="p_eq"></div><div class="plot" id="p_raw"></div>
+      <div class="plot" id="p_share"></div><div class="plot" id="p_sum"></div>
+      <div class="plot" id="p_corr"></div><div class="plot" id="p_sm"></div>
+      <div class="plot tall" id="p_vec" style="grid-column:1/-1"></div>
+      <div class="plot" id="p_lufs"></div><div class="plot" id="p_gr"></div>
+    </div>
+    <div class="card" style="margin-top:10px"><h3>Time alignment of raw inputs (GCC-PHAT)</h3><div id="align"></div>
+      <div class="note">+ = input arrives later than the reference. Small IQR (&lt;2 ms) = trustworthy; dense tutti passages often give huge IQR. Use sparse/a-cappella excerpts to measure.</div></div>
+  </div>
+</div>
+<script>
+const COLORS=['#5aa9ff','#ff9f43','#2ed573','#ff6b81','#a29bfe','#ffd32a','#00d2d3','#c56cf0','#ff7f50'];
+const S={cfg:null,ver:{cfg:0,state:0},data:null,edit:null,compare:[],saving:0,dirty:false,timer:null,anaTimer:null,busy:false,again:false};
+const $=id=>document.getElementById(id);
+const api=async(p,b)=>{const r=await fetch(p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j};
+const fmtT=s=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+const LAY={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#e6e8ee',size:11},margin:{l:50,r:15,t:34,b:40},legend:{orientation:'h',y:-0.18,font:{size:10}},
+  xaxis:{gridcolor:'#333a46',zerolinecolor:'#555'},yaxis:{gridcolor:'#333a46',zerolinecolor:'#555'}};
+const FX={type:'log',range:[Math.log10(20),Math.log10(22000)],tickvals:[31.5,63,125,250,500,1000,2000,4000,8000,16000],ticktext:['31','63','125','250','500','1k','2k','4k','8k','16k'],gridcolor:'#333a46'};
+const lay=(t,extra={})=>Object.assign(JSON.parse(JSON.stringify(LAY)),{title:{text:t,font:{size:12}}},extra);
+const colorOf=n=>COLORS[Math.max(0,S.compare.indexOf(n))%COLORS.length];
+function status(t){$('status').textContent=t}
+
+// ---------------------------------------------------------------- config / state
+async function loadConfig(applyState=true){
+  S.cfg=await api('/api/config');S.ver=S.cfg.version;
+  const ex=$('excerpt');ex.innerHTML='<option value="">— custom —</option>'+Object.keys(S.cfg.excerpts).map(k=>`<option>${k}</option>`).join('');
+  const st=S.cfg.state||{};const names=Object.keys(S.cfg.resolved);
+  if(applyState){
+    $('start').value=st.start??'39:08';$('dur').value=st.dur??60;
+    S.compare=(st.compare||['raw','current']).filter(n=>names.includes(n));if(!S.compare.length)S.compare=[names[0]];
+  } else S.compare=S.compare.filter(n=>names.includes(n));
+  const editName=(applyState&&st.edit&&names.includes(st.edit))?st.edit:(S.edit&&names.includes(S.edit.name)?S.edit.name:(names.includes('current')?'current':names[0]));
+  $('edit').innerHTML=names.map(n=>`<option ${n==editName?'selected':''}>${n}</option>`).join('');
+  S.edit={name:editName,p:JSON.parse(JSON.stringify(S.cfg.resolved[editName]))};
+  syncExcerptSel();renderCompare();renderEditor();
+}
+function syncExcerptSel(){const s=$('start').value,d=+$('dur').value;$('excerpt').value=Object.entries(S.cfg.excerpts).find(([k,v])=>v[0]==s&&+v[1]==d)?.[0]||''}
+function pushState(){api('/api/state',{start:$('start').value,dur:+$('dur').value,compare:S.compare,edit:S.edit?.name}).then(v=>S.ver=v)}
+function renderCompare(){
+  $('compare').innerHTML=Object.keys(S.cfg.resolved).map(n=>`<label><input type="checkbox" data-n="${n}" ${S.compare.includes(n)?'checked':''}> ${n}</label>`).join('');
+  $('compare').querySelectorAll('input').forEach(c=>c.onchange=()=>{const n=c.dataset.n;
+    if(c.checked){if(!S.compare.includes(n))S.compare.push(n)}else S.compare=S.compare.filter(x=>x!=n);
+    if(!S.compare.length){S.compare=[n];c.checked=true}pushState();scheduleAnalyze(50)});
+}
+
+// ---------------------------------------------------------------- editor
+function ctl(parent,label,val,o,set){
+  const r=document.createElement('div');r.className='row';
+  const lg=o.log, toS=v=>lg?Math.round(1000*Math.log(v/o.min)/Math.log(o.max/o.min)):v, frS=v=>lg?o.min*Math.pow(o.max/o.min,v/1000):+v;
+  r.innerHTML=`<label>${label}</label><input type="range"><input type="number">`;
+  const [rg,nb]=r.querySelectorAll('input');
+  if(lg){rg.min=0;rg.max=1000;rg.step=1}else{rg.min=o.min;rg.max=o.max;rg.step=o.step}
+  nb.step=o.step;rg.value=toS(val);nb.value=val;
+  const round=v=>lg?(v<100?Math.round(v*10)/10:Math.round(v)):Math.round(v/o.step)*o.step;
+  rg.oninput=()=>{const v=+round(frS(+rg.value)).toFixed(3);nb.value=v;set(v);changed()};
+  nb.onchange=()=>{const v=+nb.value;rg.value=toS(v);set(v);changed()};
+  parent.appendChild(r);
+}
+const FDEF={peak:{f:1000,oct:1,g:0},highshelf:{f:6000,g:0,slope:0.7},lowshelf:{f:200,g:0,slope:0.7},highpass:{f:30,q:0.707},lowpass:{f:18000,q:0.707}};
+function renderEditor(){
+  const ed=$('editor');ed.innerHTML='';if(!S.edit)return;const p=S.edit.p;$('desc').value=p.description||'';
+  const m=p.master=p.master||{};const mc=document.createElement('div');mc.className='card';mc.innerHTML='<h3>Master</h3>';
+  ctl(mc,'gain dB',m.gain_db??0,{min:-12,max:24,step:0.1},v=>m.gain_db=v);
+  const lim=document.createElement('div');lim.className='row';lim.innerHTML=`<label>limiter</label><label><input type="checkbox" ${m.limiter_ceiling?'checked':''}> on</label><span></span>`;
+  lim.querySelector('input').onchange=e=>{m.limiter_ceiling=e.target.checked?(m._ceil||0.9):null;changed()};mc.appendChild(lim);
+  ctl(mc,'ceiling',m.limiter_ceiling||0.9,{min:0.3,max:1,step:0.01},v=>{m._ceil=v;if(m.limiter_ceiling)m.limiter_ceiling=v});
+  ctl(mc,'release ms',m.release_ms??50,{min:5,max:500,step:1},v=>m.release_ms=v);
+  ed.appendChild(mc);
+  p.layers.forEach(L=>{
+    const c=document.createElement('div');c.className='card';
+    c.innerHTML=`<h3><span>Layer: ${L.name}</span><label><input type="checkbox" ${L.mute?'checked':''}> mute</label></h3>`;
+    c.querySelector('h3 input').onchange=e=>{L.mute=e.target.checked;changed()};
+    ctl(c,'gain dB',L.gain_db??0,{min:-30,max:18,step:0.1},v=>L.gain_db=v);
+    ctl(c,'width',L.width??1,{min:0,max:2,step:0.01},v=>L.width=v);
+    ctl(c,'delay ms',L.delay_ms??0,{min:0,max:40,step:0.1},v=>L.delay_ms=v);
+    L.inputs.forEach((i,k)=>{ctl(c,`in${k+1} pan`,i.pan??0,{min:-1,max:1,step:0.01},v=>i.pan=v);ctl(c,`in${k+1} dB`,i.gain_db??0,{min:-24,max:12,step:0.1},v=>i.gain_db=v)});
+    const n=document.createElement('div');n.className='note';n.textContent=L.inputs.map((i,k)=>`in${k+1}: ${i.file}[${i.ch??0}]`).join(' · ');c.appendChild(n);
+    (L.filters=L.filters||[]).forEach((f,j)=>{
+      const fd=document.createElement('div');fd.className='filt';
+      fd.innerHTML=`<div class="hd"><b>#${j}</b><select>${Object.keys(FDEF).map(t=>`<option ${t==f.type?'selected':''}>${t}</option>`).join('')}</select>
+        <label><input type="checkbox" ${f.bypass?'checked':''}> bypass</label><button title="remove">✕</button></div>`;
+      const [sel]=fd.querySelectorAll('select');const [byp]=fd.querySelectorAll('input');
+      sel.onchange=()=>{L.filters[j]=Object.assign({type:sel.value},FDEF[sel.value],{f:f.f});changed();renderEditor()};
+      byp.onchange=()=>{if(byp.checked)f.bypass=true;else delete f.bypass;changed()};
+      fd.querySelector('button').onclick=()=>{L.filters.splice(j,1);changed();renderEditor()};
+      ctl(fd,'freq Hz',f.f,{min:20,max:20000,step:1,log:true},v=>f.f=v);
+      if('g' in FDEF[f.type])ctl(fd,'gain dB',f.g??0,{min:-18,max:18,step:0.1},v=>f.g=v);
+      if(f.type=='peak')ctl(fd,'width oct',f.oct??1,{min:0.1,max:4,step:0.05},v=>f.oct=v);
+      if(f.type.endsWith('shelf'))ctl(fd,'slope',f.slope??0.5,{min:0.1,max:1,step:0.05},v=>f.slope=v);
+      if(f.type.endsWith('pass'))ctl(fd,'Q',f.q??0.707,{min:0.3,max:4,step:0.01},v=>f.q=v);
+      c.appendChild(fd);
+    });
+    const add=document.createElement('button');add.textContent='+ filter';add.style.marginTop='6px';
+    add.onclick=()=>{L.filters.push({type:'peak',...FDEF.peak});changed();renderEditor()};c.appendChild(add);
+    ed.appendChild(c);
+  });
+}
+function cleanPreset(p){const q=JSON.parse(JSON.stringify(p));if(q.master)delete q.master._ceil;return q}
+function changed(){S.dirty=true;clearTimeout(S.timer);S.timer=setTimeout(save,400)}
+async function save(){
+  if(!S.edit)return;S.saving++;
+  try{S.ver=await api('/api/preset',{name:S.edit.name,preset:cleanPreset(S.edit.p)});S.cfg.resolved[S.edit.name]=cleanPreset(S.edit.p);S.dirty=false;
+    if(!S.compare.includes(S.edit.name)){S.compare.push(S.edit.name);renderCompare();pushState()}
+    if($('auto').checked)scheduleAnalyze(100)}catch(e){status('save failed: '+e.message)}finally{S.saving--}
+}
+$('desc').onchange=()=>{S.edit.p.description=$('desc').value;changed()};
+$('edit').onchange=()=>{const n=$('edit').value;S.edit={name:n,p:JSON.parse(JSON.stringify(S.cfg.resolved[n]))};renderEditor();pushState()};
+$('clone').onclick=async()=>{const n=prompt('New preset name',S.edit.name+'_v2');if(!n)return;const p=cleanPreset(S.edit.p);
+  S.ver=await api('/api/preset',{name:n,preset:p});S.compare.push(n);S.edit={name:n,p};await loadConfig(false);pushState();scheduleAnalyze(50)};
+$('del').onclick=async()=>{if(!confirm('Delete preset '+S.edit.name+'?'))return;try{S.ver=await api('/api/delete',{name:S.edit.name});S.edit=null;await loadConfig(false);pushState();scheduleAnalyze(50)}catch(e){alert(e.message)}};
+$('ffm').onclick=async()=>{const r=await api('/api/ffmpeg',{preset:S.edit.name,start:$('start').value,dur:+$('dur').value});const o=$('ffout');o.style.display='block';o.textContent=r.cmd};
+$('excerpt').onchange=()=>{const e=S.cfg.excerpts[$('excerpt').value];if(!e)return;$('start').value=e[0];$('dur').value=e[1];pushState();scheduleAnalyze(50)};
+$('start').onchange=$('dur').onchange=()=>{syncExcerptSel();pushState();scheduleAnalyze(50)};
+$('analyze').onclick=()=>analyze();
+
+// ---------------------------------------------------------------- analysis
+function scheduleAnalyze(ms=300){clearTimeout(S.anaTimer);S.anaTimer=setTimeout(analyze,ms)}
+async function analyze(){
+  if(S.busy){S.again=true;return}S.busy=true;const t0=performance.now();status('analysing '+S.compare.join(', ')+' …');
+  try{const d=await api('/api/analyze',{presets:S.compare,start:$('start').value,dur:+$('dur').value});S.data=d;draw(d);
+    status(`analysed in ${((performance.now()-t0)/1000).toFixed(1)} s`);loadAudio(d)}catch(e){status('error: '+e.message)}
+  S.busy=false;if(S.again){S.again=false;analyze()}
+}
+function cls(b,v){const g=(S.data.guide.find(x=>`${x[0]}-${x[1]}`==b)||[])[2];if(g===undefined)return'';const d=Math.abs(v-g);return d<=3?'good':d<=7?'warn':'bad'}
+function draw(d){
+  const P=d.presets, sw=n=>`<span class="sw" style="background:${colorOf(n)}"></span>`;
+  $('summary').innerHTML=`<table><tr><th class="l">preset</th><th>LUFS</th><th>peak</th><th>crest</th><th>centroid Hz</th><th>L/R corr</th><th>S/M dB</th><th>L−R dB</th><th>max GR</th><th>% GR&gt;1dB</th><th class="l">energy share</th></tr>`+
+    P.map(p=>{const m=p.metrics;return`<tr><td class="l">${sw(p.name)}${p.name}</td><td>${m.lufs.toFixed(1)}</td><td>${m.peak_dbfs.toFixed(1)}</td><td>${m.crest_db.toFixed(1)}</td><td>${m.centroid_hz.toFixed(0)}</td><td>${m.corr.toFixed(2)}</td><td>${m.side_mid_db.toFixed(1)}</td><td>${m.balance_db.toFixed(1)}</td><td>${m.gr_max_db.toFixed(1)}</td><td>${m.gr_time_pct_over_1db.toFixed(1)}</td><td class="l">${Object.entries(p.contrib_total).map(([k,v])=>`${k} ${(v*100).toFixed(0)}%`).join(' / ')}</td></tr>`}).join('')+'</table>';
+  const bands=Object.keys(P[0].tilt);const gd=Object.fromEntries(d.guide.map(g=>[`${g[0]}-${g[1]}`,g[2]]));
+  $('tonal').innerHTML=`<table><tr><th class="l">Hz</th>${bands.map(b=>`<th>${b}</th>`).join('')}</tr>`+P.map(p=>`<tr><td class="l">${sw(p.name)}${p.name}</td>${bands.map(b=>`<td class="${cls(b,p.tilt[b])}">${p.tilt[b].toFixed(1)}</td>`).join('')}</tr>`).join('')+
+    `<tr><td class="l mut">rough guide</td>${bands.map(b=>`<td class="mut">${gd[b]!==undefined?gd[b]:''}</td>`).join('')}</tr></table>`;
+  const guide=d.guide.map((g,i)=>({x:[g[0],g[1]],y:[g[2],g[2]],mode:'lines',line:{color:'#fff',dash:'dash',width:2},name:'rough guide',showlegend:i==0,hoverinfo:'skip'}));
+  Plotly.react('p_spec',[...P.map(p=>({x:p.spectrum.f,y:p.spectrum.db,name:p.name,line:{color:colorOf(p.name)}})),...guide],lay('Master spectrum (1/6 oct, 0 dB = 0.5–2 kHz)',{xaxis:FX,yaxis:{range:[-75,15],title:'dB',gridcolor:'#333a46'}}),{responsive:true});
+  const r0=P[0];Plotly.react('p_delta',P.slice(1).map(p=>({x:p.spectrum.f,y:p.spectrum.db.map((v,i)=>v-(r0.spectrum.db[i]??NaN)),name:`${p.name} − ${r0.name}`,line:{color:colorOf(p.name)}})),
+    lay(`Tonal change vs '${r0.name}'`,{xaxis:FX,yaxis:{title:'dB',gridcolor:'#333a46',zerolinecolor:'#aaa'}}),{responsive:true});
+  const eqT=[];d.layers.forEach((ln,li)=>Object.entries(d.eq[ln]).forEach(([pn,c])=>eqT.push({x:c.f,y:c.db,name:`${ln} · ${pn}`,line:{color:colorOf(pn),dash:['solid','dot','dash','dashdot'][li%4]}})));
+  Plotly.react('p_eq',eqT,lay('EQ + gain per layer (solid/dotted = layer)',{xaxis:FX,yaxis:{title:'dB',gridcolor:'#333a46'}}),{responsive:true});
+  Plotly.react('p_raw',d.raw.map((r,i)=>({x:r.f,y:r.db,name:r.name,line:{color:['#9aa5b8','#6c7a92','#e0b36a','#b8864a'][i%4]}})),lay('Raw inputs (normalised)',{xaxis:FX,yaxis:{range:[-75,15],gridcolor:'#333a46'}}),{responsive:true});
+  const oct=d.oct.map(f=>f<1000?`${f}`:`${f/1000}k`);const shareT=[];
+  P.forEach((p,pi)=>d.layers.forEach((ln,li)=>shareT.push({type:'bar',x:oct,y:p.contrib.share[ln].map(v=>v*100),name:`${ln}`,legendgroup:ln,showlegend:pi==0,offsetgroup:p.name,
+    marker:{color:['#5aa9ff','#ff9f43','#2ed573','#ff6b81'][li%4],line:{color:colorOf(p.name),width:2}},hovertemplate:`${p.name} · ${ln}: %{y:.0f}%<extra></extra>`,base:li?p.contrib.share[d.layers[0]].map((v,i)=>d.layers.slice(0,li).reduce((a,l)=>a+p.contrib.share[l][i]*100,0)):undefined})));
+  Plotly.react('p_share',shareT,lay('Mic energy share per octave (bar group = preset, outline colour)',{barmode:'group',yaxis:{range:[0,100],title:'%',gridcolor:'#333a46'}}),{responsive:true});
+  Plotly.react('p_sum',P.map(p=>({x:oct,y:p.contrib.sum_gain,name:p.name,mode:'lines+markers',line:{color:colorOf(p.name)}})),lay('Layer summation gain (+3 coherent, 0 uncorrelated, − cancellation)',{yaxis:{range:[-6,4],title:'dB',gridcolor:'#333a46',zerolinecolor:'#aaa'}}),{responsive:true});
+  Plotly.react('p_corr',P.map(p=>({x:oct,y:p.stereo.corr,name:p.name,mode:'lines+markers',line:{color:colorOf(p.name)}})),lay('L/R correlation per octave',{yaxis:{range:[-0.5,1.05],gridcolor:'#333a46'}}),{responsive:true});
+  Plotly.react('p_sm',P.map(p=>({x:oct,y:p.stereo.sm,name:p.name,mode:'lines+markers',line:{color:colorOf(p.name)}})),lay('Side/Mid energy per octave (dB; higher = wider)',{yaxis:{title:'dB',gridcolor:'#333a46'}}),{responsive:true});
+  const n=P.length, vec=P.map((p,i)=>({type:'heatmap',z:p.vector,x0:-5,dx:10/80,y0:-5,dy:10/80,colorscale:'Inferno',showscale:false,xaxis:`x${i?i+1:''}`,yaxis:`y${i?i+1:''}`}));
+  const vl=lay('Vectorscope (x = Side, y = Mid, normalised to RMS): round blob = wide/diffuse, vertical line = mono',{grid:{rows:1,columns:n,pattern:'independent'},
+    annotations:P.map((p,i)=>({text:`${p.name} · corr ${p.metrics.corr.toFixed(2)}`,xref:`x${i?i+1:''} domain`,yref:`y${i?i+1:''} domain`,x:0.5,y:1.06,showarrow:false,font:{color:colorOf(p.name)}}))});
+  P.forEach((p,i)=>{vl[`xaxis${i?i+1:''}`]={showticklabels:false,gridcolor:'#333a46',scaleanchor:`y${i?i+1:''}`};vl[`yaxis${i?i+1:''}`]={showticklabels:false,gridcolor:'#333a46'}});
+  Plotly.react('p_vec',vec,vl,{responsive:true});
+  Plotly.react('p_lufs',P.map(p=>({y:p.st,name:p.name,line:{color:colorOf(p.name)}})),lay('Short-term loudness (3 s)',{xaxis:{title:'s',gridcolor:'#333a46'},yaxis:{title:'LUFS',gridcolor:'#333a46'}}),{responsive:true});
+  Plotly.react('p_gr',P.map(p=>({y:p.gr,name:p.name,line:{color:colorOf(p.name)}})),lay('Limiter gain reduction',{xaxis:{title:'s',gridcolor:'#333a46'},yaxis:{title:'dB',gridcolor:'#333a46'}}),{responsive:true});
+  $('align').innerHTML=d.align.length?`<table><tr><th class="l">reference</th><th class="l">input</th><th>lag ms</th><th>IQR ms</th><th>confidence</th><th>windows</th></tr>`+
+    d.align.map(a=>`<tr><td class="l">${a.ref}</td><td class="l">${a.layer}</td><td>${a.lag_ms.toFixed(2)}</td><td class="${a.spread_ms<2?'good':a.spread_ms<6?'warn':'bad'}">${a.spread_ms.toFixed(2)}</td><td>${a.confidence.toFixed(3)}</td><td>${a.windows}</td></tr>`).join('')+'</table>':'<span class="mut">excerpt shorter than one 10 s window</span>';
+  renderPlayButtons();
+}
+
+// ---------------------------------------------------------------- audio A/B
+const A={ctx:null,bufs:{},hashes:{},srcs:[],gains:{},playing:false,t0:0,off:0,active:null,dur:0};
+async function loadAudio(d){
+  A.ctx=A.ctx||new AudioContext();const want=d.presets.map(p=>p.name);const st=$('start').value,du=+$('dur').value;
+  const jobs=want.map(async n=>{const h=d.audio[n];if(A.hashes[n]===h&&A.bufs[n])return;
+    const r=await fetch(`/api/audio?h=${h}&preset=${encodeURIComponent(n)}&start=${encodeURIComponent(st)}&dur=${du}`);
+    A.bufs[n]=await A.ctx.decodeAudioData(await r.arrayBuffer());A.hashes[n]=h});
+  status($('status').textContent+' · loading audio…');await Promise.all(jobs);
+  Object.keys(A.bufs).forEach(n=>{if(!want.includes(n)){delete A.bufs[n];delete A.hashes[n]}});
+  if(!A.active||!want.includes(A.active))A.active=want[want.length>1?1:0];
+  A.dur=Math.max(...Object.values(A.bufs).map(b=>b.duration));
+  status($('status').textContent.replace(' · loading audio…',' · audio ready'));renderPlayButtons();
+  if(A.playing){const pos=curPos();stop(false);play(pos)}
+}
+function matchGain(n){if(!$('lmatch').checked||!S.data)return 1;const L=Object.fromEntries(S.data.presets.map(p=>[p.name,p.metrics.lufs]));const t=Math.min(...Object.values(L));return Math.pow(10,(t-L[n])/20)}
+function setGains(){Object.entries(A.gains).forEach(([n,g])=>g.gain.setTargetAtTime(n==A.active?matchGain(n):0,A.ctx.currentTime,0.01))}
+function curPos(){return A.playing?(A.ctx.currentTime-A.t0+A.off)%A.dur:A.off}
+function play(pos=A.off){if(!Object.keys(A.bufs).length)return;A.ctx.resume();A.srcs=[];A.gains={};const when=A.ctx.currentTime+0.05;
+  Object.entries(A.bufs).forEach(([n,b])=>{const s=A.ctx.createBufferSource();s.buffer=b;s.loop=true;const g=A.ctx.createGain();g.gain.value=n==A.active?matchGain(n):0;
+    s.connect(g).connect(A.ctx.destination);s.start(when,pos%b.duration);A.srcs.push(s);A.gains[n]=g});
+  A.t0=when;A.off=pos;A.playing=true;$('play').textContent='■ Stop';$('play').classList.add('on')}
+function stop(resetBtn=true){A.off=curPos();A.srcs.forEach(s=>{try{s.stop()}catch(e){}});A.srcs=[];A.playing=false;if(resetBtn){$('play').textContent='▶ Play';$('play').classList.remove('on')}}
+function renderPlayButtons(){$('pbtns').innerHTML=(S.data?.presets||[]).map((p,i)=>`<button class="pbtn ${p.name==A.active?'on':''}" data-n="${p.name}" style="border-color:${colorOf(p.name)}">${i+1} ${p.name}</button>`).join(' ');
+  $('pbtns').querySelectorAll('button').forEach(b=>b.onclick=()=>select(b.dataset.n))}
+function select(n){A.active=n;if(A.playing)setGains();renderPlayButtons()}
+$('play').onclick=()=>A.playing?stop():play();
+$('lmatch').onchange=()=>A.playing&&setGains();
+$('seek').oninput=()=>{const pos=$('seek').value/1000*A.dur;if(A.playing){stop(false);play(pos)}else A.off=pos};
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT'].includes(e.target.tagName)&&e.target.type!='range'&&e.target.type!='checkbox')return;
+  if(e.code=='Space'){e.preventDefault();A.playing?stop():play()}const k=+e.key;if(k>=1&&k<=9&&S.data?.presets[k-1])select(S.data.presets[k-1].name)});
+setInterval(()=>{if(A.dur){const p=curPos();$('time').textContent=`${fmtT(p)} / ${fmtT(A.dur)}  (concert ${fmtT((S.data?parseT($('start').value):0)+p)})`;if(document.activeElement!==$('seek'))$('seek').value=1000*p/A.dur}},200);
+const parseT=t=>String(t).split(':').reduce((a,v)=>a*60+(+v),0);
+
+// ---------------------------------------------------------------- follow external edits (Claude Code)
+setInterval(async()=>{if(S.saving||S.dirty)return;try{const v=await api('/api/version');
+  if(v.cfg!==S.ver.cfg||v.state!==S.ver.state){const stCh=v.state!==S.ver.state;await loadConfig(stCh);status('external change picked up');scheduleAnalyze(50)}}catch(e){}},1500);
+
+loadConfig(true).then(()=>analyze());
+</script></body></html>

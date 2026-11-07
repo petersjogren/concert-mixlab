@@ -1,50 +1,314 @@
 {
   "source_dir": "~/Downloads/Recordings 2",
+  "excerpts": {
+    "Brahms - Warum (full)": [
+      "7:36",
+      530
+    ],
+    "Brahms - opening": [
+      "7:36",
+      60
+    ],
+    "Lacrimosa": [
+      "39:08",
+      180
+    ],
+    "Lacrimosa - first minute": [
+      "39:08",
+      60
+    ],
+    "Sanctus": [
+      "49:40",
+      92
+    ]
+  },
   "presets": {
     "raw": {
       "description": "No delay, no EQ. Close pair hard L/R + camera summed flat, same master gain/limiter as 'current'.",
       "layers": [
-        {"name": "close", "inputs": [{"file": "ZOOM0001_INPUT1.WAV", "ch": 0, "pan": -1},
-                                     {"file": "ZOOM0001_INPUT2.WAV", "ch": 0, "pan": 1}],
-         "width": 1.0, "delay_ms": 0, "filters": [], "gain_db": 0},
-        {"name": "camera", "inputs": [{"file": "ZOOM0001_MIC.WAV", "ch": 0, "pan": -1},
-                                      {"file": "ZOOM0001_MIC.WAV", "ch": 1, "pan": 1}],
-         "width": 1.0, "delay_ms": 0, "filters": [], "gain_db": 0}
+        {
+          "name": "close",
+          "inputs": [
+            {
+              "file": "ZOOM0001_INPUT1.WAV",
+              "ch": 0,
+              "pan": -1
+            },
+            {
+              "file": "ZOOM0001_INPUT2.WAV",
+              "ch": 0,
+              "pan": 1
+            }
+          ],
+          "width": 1.0,
+          "delay_ms": 0,
+          "filters": [],
+          "gain_db": 0
+        },
+        {
+          "name": "camera",
+          "inputs": [
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 0,
+              "pan": -1
+            },
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 1,
+              "pan": 1
+            }
+          ],
+          "width": 1.0,
+          "delay_ms": 0,
+          "filters": [],
+          "gain_db": 0
+        }
       ],
-      "master": {"gain_db": 10.88, "limiter_ceiling": 0.9, "attack_ms": 5, "release_ms": 50}
+      "master": {
+        "gain_db": 10.88,
+        "limiter_ceiling": 0.9,
+        "attack_ms": 5,
+        "release_ms": 50
+      }
     },
     "current": {
-      "extends": "raw",
       "description": "The chain used for the Lacrimosa/Brahms demos.",
       "layers": [
-        {"name": "close", "delay_ms": 11, "gain_db": 4.08, "filters": [
-          {"type": "highpass", "f": 30},
-          {"type": "peak", "f": 330, "oct": 1.2, "g": -3},
-          {"type": "peak", "f": 3000, "oct": 1.5, "g": 4},
-          {"type": "highshelf", "f": 5000, "g": 10, "slope": 0.7}]},
-        {"name": "camera", "gain_db": -4.44, "filters": [
-          {"type": "highpass", "f": 30},
-          {"type": "peak", "f": 330, "oct": 1.2, "g": -2},
-          {"type": "peak", "f": 3000, "oct": 1.5, "g": 2},
-          {"type": "highshelf", "f": 6000, "g": 6, "slope": 0.7}]}
-      ]
+        {
+          "name": "close",
+          "inputs": [
+            {
+              "file": "ZOOM0001_INPUT1.WAV",
+              "ch": 0,
+              "pan": -1
+            },
+            {
+              "file": "ZOOM0001_INPUT2.WAV",
+              "ch": 0,
+              "pan": 1
+            }
+          ],
+          "width": 1,
+          "delay_ms": 11,
+          "filters": [
+            {
+              "type": "highpass",
+              "f": 30
+            },
+            {
+              "type": "peak",
+              "f": 330,
+              "oct": 1.2,
+              "g": -3
+            },
+            {
+              "type": "peak",
+              "f": 3000,
+              "oct": 1.5,
+              "g": 4
+            },
+            {
+              "type": "highshelf",
+              "f": 5000,
+              "g": 10,
+              "slope": 0.7
+            }
+          ],
+          "gain_db": 4.08
+        },
+        {
+          "name": "camera",
+          "inputs": [
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 0,
+              "pan": -1
+            },
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 1,
+              "pan": 1
+            }
+          ],
+          "width": 1,
+          "delay_ms": 0,
+          "filters": [
+            {
+              "type": "highpass",
+              "f": 30
+            },
+            {
+              "type": "peak",
+              "f": 330,
+              "oct": 1.2,
+              "g": -2
+            },
+            {
+              "type": "peak",
+              "f": 3000,
+              "oct": 1.5,
+              "g": 2
+            },
+            {
+              "type": "highshelf",
+              "f": 6000,
+              "g": 6,
+              "slope": 0.7
+            }
+          ],
+          "gain_db": -4.44
+        }
+      ],
+      "master": {
+        "gain_db": 10.88,
+        "limiter_ceiling": 0.9,
+        "attack_ms": 5,
+        "release_ms": 50
+      }
     },
     "brighter": {
       "extends": "current",
       "description": "Experiment: +12 dB shelf on close pair, camera 4 dB lower.",
       "layers": [
-        {"name": "close", "filters": [
-          {"type": "highpass", "f": 30},
-          {"type": "peak", "f": 330, "oct": 1.2, "g": -3},
-          {"type": "peak", "f": 3000, "oct": 1.5, "g": 4},
-          {"type": "highshelf", "f": 5000, "g": 12, "slope": 0.7}]},
-        {"name": "camera", "gain_db": -8.44}
+        {
+          "name": "close",
+          "filters": [
+            {
+              "type": "highpass",
+              "f": 30
+            },
+            {
+              "type": "peak",
+              "f": 330,
+              "oct": 1.2,
+              "g": -3
+            },
+            {
+              "type": "peak",
+              "f": 3000,
+              "oct": 1.5,
+              "g": 4
+            },
+            {
+              "type": "highshelf",
+              "f": 5000,
+              "g": 12,
+              "slope": 0.7
+            }
+          ]
+        },
+        {
+          "name": "camera",
+          "gain_db": -8.44
+        }
       ]
     },
     "close_only": {
       "extends": "current",
       "description": "Current EQ, camera muted: what the close pair alone delivers.",
-      "layers": [{"name": "camera", "mute": true}]
+      "layers": [
+        {
+          "name": "camera",
+          "mute": true
+        }
+      ]
+    },
+    "wide_center": {
+      "description": "current + close width 0.7, INPUT1 +2.3 dB to fix right lean",
+      "layers": [
+        {
+          "name": "close",
+          "inputs": [
+            {
+              "file": "ZOOM0001_INPUT1.WAV",
+              "ch": 0,
+              "pan": -1,
+              "gain_db": 2.3
+            },
+            {
+              "file": "ZOOM0001_INPUT2.WAV",
+              "ch": 0,
+              "pan": 1
+            }
+          ],
+          "width": 0.7,
+          "delay_ms": 11,
+          "filters": [
+            {
+              "type": "highpass",
+              "f": 30
+            },
+            {
+              "type": "peak",
+              "f": 330,
+              "oct": 1.2,
+              "g": -3
+            },
+            {
+              "type": "peak",
+              "f": 3000,
+              "oct": 1.5,
+              "g": 4
+            },
+            {
+              "type": "highshelf",
+              "f": 5000,
+              "g": 10,
+              "slope": 0.7
+            }
+          ],
+          "gain_db": 4.08
+        },
+        {
+          "name": "camera",
+          "inputs": [
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 0,
+              "pan": -1
+            },
+            {
+              "file": "ZOOM0001_MIC.WAV",
+              "ch": 1,
+              "pan": 1
+            }
+          ],
+          "width": 1.0,
+          "delay_ms": 0,
+          "filters": [
+            {
+              "type": "highpass",
+              "f": 30
+            },
+            {
+              "type": "peak",
+              "f": 330,
+              "oct": 1.2,
+              "g": -2
+            },
+            {
+              "type": "peak",
+              "f": 3000,
+              "oct": 1.5,
+              "g": 2
+            },
+            {
+              "type": "highshelf",
+              "f": 6000,
+              "g": 6,
+              "slope": 0.7
+            }
+          ],
+          "gain_db": -4.44
+        }
+      ],
+      "master": {
+        "gain_db": 10.88,
+        "limiter_ceiling": 0.9,
+        "attack_ms": 5,
+        "release_ms": 50
+      }
     }
   }
 }

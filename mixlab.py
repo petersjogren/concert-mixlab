@@ -76,6 +76,8 @@ _cache = {}
 def read_audio(path, start, dur):
     key = (path, start, dur)
     if key not in _cache:
+        if any(k[1:] != (start, dur) for k in _cache):              # keep only one excerpt in memory
+            _cache.clear(); _layer_cache.clear()
         cmd = ["ffmpeg", "-v", "error", "-ss", str(start)]
         if dur:
             cmd += ["-t", str(dur)]
@@ -158,12 +160,16 @@ def routing_matrix(layer):
 def db2lin(d): return 10 ** (d / 20)
 
 # ----------------------------------------------------------------------------- render
+_layer_cache = {}
 def render_layers(preset, src_dir, start, dur):
-    """Return dict name -> stereo array (post layer gain, pre master)."""
+    """Return dict name -> stereo array (post layer gain, pre master). Cached per layer settings."""
     outs = {}
     for layer in preset["layers"]:
         if layer.get("mute"):
             continue
+        key = (json.dumps(layer, sort_keys=True), src_dir, start, dur)
+        if key in _layer_cache:
+            outs[layer["name"]] = _layer_cache[key]; continue
         chans = [read_audio(os.path.join(src_dir, i["file"]), start, dur)[:, i.get("ch", 0)] for i in layer["inputs"]]
         n = min(len(c) for c in chans)
         X = np.stack([c[:n] for c in chans])
@@ -175,6 +181,11 @@ def render_layers(preset, src_dir, start, dur):
         if sos is not None:
             Y = signal.sosfilt(sos, Y, axis=0)
         outs[layer["name"]] = Y * db2lin(layer.get("gain_db", 0.0))
+        if len(_layer_cache) >= 12:
+            _layer_cache.pop(next(iter(_layer_cache)))
+        _layer_cache[key] = outs[layer["name"]]
+    if not outs:
+        raise ValueError("all layers are muted")
     n = min(len(v) for v in outs.values())
     return {k: v[:n] for k, v in outs.items()}
 
@@ -552,6 +563,124 @@ def jsonable(r):
     return dict(name=r["name"], metrics=r["metrics"], tilt=r["tilt"], stereo=r["stereo"], contrib=r["contrib"],
                 contrib_total=r["contrib_total"], preset=r["preset"])
 
+# ----------------------------------------------------------------------------- JSON API (GUI + agents)
+def eq_curve(layer, n=300):
+    w = np.logspace(math.log10(20), math.log10(22000), n); sos = layer_sos(layer)
+    h = np.ones_like(w, dtype=complex) if sos is None else signal.sosfreqz(sos, worN=w, fs=SR)[1]
+    return w, 20 * np.log10(np.abs(h) + 1e-12) + layer.get("gain_db", 0.0)
+
+def norm_smooth(f, P):
+    x, d = smooth_db(f, P); ref = 10 * np.log10(P[band_mask(f, 500, 2000)].mean())
+    ok = ~np.isnan(d)
+    return x[ok].round(1).tolist(), (d[ok] - ref).round(2).tolist()
+
+def raw_spectra(preset, src_dir, start, dur):
+    out = []
+    for L in preset["layers"]:
+        for i in L["inputs"]:
+            x = read_audio(os.path.join(src_dir, i["file"]), start, dur)[:, i.get("ch", 0)]
+            f, p = signal.welch(x, SR, nperseg=8192); fx, d = norm_smooth(f, p)
+            out.append(dict(name=f"{L['name']}: {i['file']}[{i.get('ch', 0)}]", f=fx, db=d))
+    return out
+
+def analysis_json(results, raw=None, align=None):
+    """Plot-ready, JSON-serialisable summary of analyse() results."""
+    lnames = list(dict.fromkeys(l["name"] for r in results for l in r["preset"]["layers"]))
+    eq = {ln: {} for ln in lnames}
+    for r in results:
+        for L in r["preset"]["layers"]:
+            if not L.get("mute"):
+                w, d = eq_curve(L); eq[L["name"]][r["name"]] = dict(f=w.round(1).tolist(), db=d.round(2).tolist())
+    out = dict(oct=OCT, guide=[[lo, hi, g] for (lo, hi), g in GUIDE.items()], layers=lnames, eq=eq, raw=raw or [], align=align or [],
+               presets=[])
+    for r in results:
+        fx, d = norm_smooth(r["f"], r["P"])
+        y = r["y"][::7]; rms = np.sqrt(np.mean(y ** 2)) + 1e-12
+        Mi, Si = (y[:, 0] + y[:, 1]) / math.sqrt(2) / rms, (y[:, 0] - y[:, 1]) / math.sqrt(2) / rms
+        H, _, _ = np.histogram2d(Mi, Si, bins=81, range=[[-5, 5], [-5, 5]])
+        g = r["gr"]; nb = len(g) // SR
+        out["presets"].append(dict(
+            name=r["name"], metrics=r["metrics"], tilt=r["tilt"], contrib_total=r["contrib_total"],
+            spectrum=dict(f=fx, db=d),
+            contrib=dict(share={ln: [b["share"].get(ln, 0.0) for b in r["contrib"]] for ln in lnames},
+                         sum_gain=[b["sum_gain_db"] for b in r["contrib"]]),
+            stereo=dict(corr=[s["corr"] for s in r["stereo"]], sm=[s["side_mid_db"] for s in r["stereo"]],
+                        balance=[s["balance_db"] for s in r["stereo"]]),
+            vector=np.log10(H + 1).round(2).tolist(),
+            st=[round(float(v), 2) for v in r["st"]],
+            gr=g[:nb * SR].reshape(nb, SR).min(1).round(2).tolist() if nb else []))
+    return out
+
+def analyse_many(cfg, names, start, dur, with_raw=True):
+    res = [analyse(n, cfg["resolved"][n], cfg["source_dir"], start, dur) for n in names]
+    raw = raw_spectra(cfg["resolved"][names[0]], cfg["source_dir"], start, dur) if with_raw else None
+    align = alignment(cfg["resolved"][names[0]], cfg["source_dir"], start, dur) if with_raw else None
+    return res, analysis_json(res, raw, align)
+
+# --- config editing (flattening: an edited preset no longer `extends` anything)
+def save_preset(cfg_path, name, preset):
+    raw = json.load(open(cfg_path))
+    p = copy.deepcopy(preset); p.pop("extends", None)
+    raw["presets"][name] = p
+    tmp = cfg_path + ".tmp"; json.dump(raw, open(tmp, "w"), indent=2); os.replace(tmp, cfg_path)
+
+def delete_preset(cfg_path, name):
+    raw = json.load(open(cfg_path))
+    users = [n for n, p in raw["presets"].items() if p.get("extends") == name]
+    if users:
+        raise SystemExit(f"cannot delete '{name}': extended by {users}")
+    raw["presets"].pop(name)
+    json.dump(raw, open(cfg_path, "w"), indent=2)
+
+def set_path(preset, path, value):
+    """path like layers.close.filters.3.g ; layers are addressed by name, lists by index."""
+    keys = path.split("."); obj = preset
+    for i, k in enumerate(keys):
+        last = i == len(keys) - 1
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], dict) and "name" in obj[0] and not k.lstrip("-").isdigit():
+                idx = next((j for j, e in enumerate(obj) if e["name"] == k), None)
+                if idx is None:
+                    raise SystemExit(f"no element named '{k}' in {path}")
+            else:
+                idx = int(k)
+                if idx == len(obj) and last:
+                    obj.append(None)
+            if last:
+                if value is None:
+                    obj.pop(idx)
+                else:
+                    obj[idx] = value
+            else:
+                obj = obj[idx]
+        else:
+            if last:
+                if value is None:
+                    obj.pop(k, None)
+                else:
+                    obj[k] = value
+            else:
+                obj = obj.setdefault(k, {})
+
+def parse_value(s):
+    if s in ("null", "delete"):
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return s
+
+STATE_FILE = "state.json"
+def state_path(cfg_path): return os.path.join(os.path.dirname(os.path.abspath(cfg_path)), STATE_FILE)
+def read_state(cfg_path):
+    try:
+        return json.load(open(state_path(cfg_path)))
+    except (OSError, json.JSONDecodeError):
+        return {}
+def write_state(cfg_path, **kw):
+    s = read_state(cfg_path); s.update({k: v for k, v in kw.items() if v is not None})
+    json.dump(s, open(state_path(cfg_path), "w"), indent=2); return s
+
 # ----------------------------------------------------------------------------- commands
 def cmd_report(args):
     cfg = load_config(args.config); start = parse_time(args.start)
@@ -604,25 +733,109 @@ def cmd_verify(args):
     res = 10 * np.log10(np.mean(d ** 2) / np.mean(pre[:n] ** 2))
     print(f"python vs ffmpeg residual: {res:.1f} dB relative to signal ({'PASS' if res < -60 else 'FAIL'})")
 
+def cmd_list(args):
+    cfg = load_config(args.config); raw = json.load(open(args.config)); st = read_state(args.config)
+    for n, p in cfg["resolved"].items():
+        ext = raw["presets"][n].get("extends")
+        print(f"{n:16s} {'(extends ' + ext + ')' if ext else '':22s} {p.get('description', '')}")
+    print("\nexcerpts:", json.dumps(raw.get("excerpts", {})))
+    print("gui state:", json.dumps(st))
+
+def cmd_show(args):
+    cfg = load_config(args.config); p = cfg["resolved"][args.preset]
+    if args.ffmpeg_style:
+        for L in p["layers"]:
+            print(f"[{L['name']}]{' MUTED' if L.get('mute') else ''} width {L.get('width', 1)} delay {L.get('delay_ms', 0)} ms gain {L.get('gain_db', 0):+} dB")
+            for j, f in enumerate(L.get("filters", [])):
+                print(f"   filters.{j}: {describe_filter(f)}{' (bypass)' if f.get('bypass') else ''}")
+        print(f"[master] {json.dumps(p.get('master', {}))}")
+    else:
+        print(json.dumps(p, indent=2))
+
+def cmd_set(args):
+    cfg = load_config(args.config)
+    if args.preset not in cfg["resolved"]:
+        raise SystemExit(f"unknown preset {args.preset}; use clone first")
+    p = copy.deepcopy(cfg["resolved"][args.preset])
+    for a in args.assign:
+        k, _, v = a.partition("=")
+        set_path(p, k.strip(), parse_value(v.strip()))
+    save_preset(args.config, args.preset, p)
+    print(f"saved '{args.preset}'"); args.ffmpeg_style = True; cmd_show(args)
+
+def cmd_clone(args):
+    cfg = load_config(args.config)
+    p = copy.deepcopy(cfg["resolved"][args.src])
+    if args.description:
+        p["description"] = args.description
+    save_preset(args.config, args.dst, p); print(f"cloned '{args.src}' -> '{args.dst}'")
+
+def cmd_delete(args):
+    delete_preset(args.config, args.preset); print(f"deleted '{args.preset}'")
+
+def cmd_metrics(args):
+    """Compact JSON for agents: metrics, tonal tilt, mic share, stereo per octave, alignment."""
+    cfg = load_config(args.config); names = args.presets.split(",") if args.presets else list(cfg["presets"])
+    res, js = analyse_many(cfg, names, parse_time(args.start), args.dur, with_raw=args.align)
+    out = dict(excerpt=dict(start=args.start, dur=args.dur), guide={f"{lo}-{hi}": g for lo, hi, g in js["guide"]},
+               octaves=OCT, alignment=js["align"], presets={})
+    for p in js["presets"]:
+        out["presets"][p["name"]] = dict(
+            metrics={k: round(v, 3) for k, v in p["metrics"].items()},
+            tilt_rel_0p5_2k={k: round(v, 1) for k, v in p["tilt"].items()},
+            energy_share={k: round(v, 3) for k, v in p["contrib_total"].items()},
+            stereo_corr_per_octave=[round(v, 2) for v in p["stereo"]["corr"]],
+            side_mid_db_per_octave=[round(v, 1) for v in p["stereo"]["sm"]],
+            layer_sum_gain_db_per_octave=[round(v, 2) for v in p["contrib"]["sum_gain"]])
+    print(json.dumps(out, indent=1))
+
+def cmd_state(args):
+    """Read or change what the GUI shows (excerpt, compared presets, edited preset). The GUI follows within ~2 s."""
+    kw = {}
+    if args.set_start is not None: kw["start"] = args.set_start
+    if args.set_dur is not None: kw["dur"] = args.set_dur
+    if args.compare: kw["compare"] = args.compare.split(",")
+    if args.edit: kw["edit"] = args.edit
+    if args.excerpt:
+        ex = json.load(open(args.config)).get("excerpts", {})[args.excerpt]; kw["start"], kw["dur"] = ex[0], ex[1]
+    print(json.dumps(write_state(args.config, **kw) if kw else read_state(args.config), indent=2))
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
+    default_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json")
+    def cfgarg(p): p.add_argument("--config", default=default_cfg)
     def common(p, preset_many=False):
-        p.add_argument("--config", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json"))
-        p.add_argument("--start", default="0", help="seconds or mm:ss / hh:mm:ss")
-        p.add_argument("--dur", type=float, default=60.0, help="seconds (0 = to end)")
+        cfgarg(p)
+        p.add_argument("--start", default=None, help="seconds or mm:ss (default: GUI state.json, else 0)")
+        p.add_argument("--dur", type=float, default=None, help="seconds, 0 = to end (default: GUI state.json, else 60)")
         if preset_many:
             p.add_argument("--presets", help="comma list (default: all)")
         else:
             p.add_argument("--preset", required=True)
-    p = sp.add_parser("report"); common(p, True); p.add_argument("--out", default="out"); p.add_argument("--render", action="store_true", help="also write each preset's master WAV")
-    p = sp.add_parser("render"); common(p); p.add_argument("--out", required=True); p.add_argument("--fade", type=float, default=0)
-    p = sp.add_parser("ffmpeg"); common(p); p.add_argument("--out", default="out.wav")
-    p = sp.add_parser("verify"); common(p)
+    p = sp.add_parser("report", help="HTML report"); common(p, True); p.add_argument("--out", default="out"); p.add_argument("--render", action="store_true", help="also write each preset's master WAV")
+    p = sp.add_parser("render", help="render one preset to WAV"); common(p); p.add_argument("--out", required=True); p.add_argument("--fade", type=float, default=0)
+    p = sp.add_parser("ffmpeg", help="print equivalent ffmpeg command"); common(p); p.add_argument("--out", default="out.wav")
+    p = sp.add_parser("verify", help="python vs ffmpeg null test"); common(p)
+    p = sp.add_parser("metrics", help="compact JSON analysis (for agents)"); common(p, True); p.add_argument("--align", action="store_true", help="include GCC-PHAT alignment (slower)")
+    p = sp.add_parser("list", help="list presets, excerpts, GUI state"); cfgarg(p)
+    p = sp.add_parser("show", help="show resolved preset"); cfgarg(p); p.add_argument("--preset", required=True); p.add_argument("--short", dest="ffmpeg_style", action="store_true")
+    p = sp.add_parser("set", help="edit preset params: path=value ..."); cfgarg(p); p.add_argument("--preset", required=True)
+    p.add_argument("assign", nargs="+", help="e.g. layers.close.width=0.7  layers.close.filters.3.g=12  layers.camera.mute=true  "
+                                             "layers.close.filters.4='{\"type\":\"peak\",\"f\":8000,\"oct\":1,\"g\":2}'  layers.close.filters.2=delete")
+    p = sp.add_parser("clone", help="copy a preset"); cfgarg(p); p.add_argument("src"); p.add_argument("dst"); p.add_argument("--description")
+    p = sp.add_parser("delete", help="delete a preset"); cfgarg(p); p.add_argument("--preset", required=True)
+    p = sp.add_parser("state", help="read/set GUI state"); cfgarg(p)
+    p.add_argument("--start", dest="set_start"); p.add_argument("--dur", dest="set_dur", type=float)
+    p.add_argument("--excerpt", help="name from presets.json 'excerpts'"); p.add_argument("--compare", help="comma list of presets"); p.add_argument("--edit")
     a = ap.parse_args()
-    if a.dur == 0:
-        a.dur = None
-    dict(report=cmd_report, render=cmd_render, ffmpeg=cmd_ffmpeg, verify=cmd_verify)[a.cmd](a)
+    if hasattr(a, "dur") and a.cmd != "state":
+        st = read_state(a.config)
+        if a.start is None: a.start = str(st.get("start", "0"))
+        if a.dur is None: a.dur = float(st.get("dur", 60.0))
+        if a.dur == 0: a.dur = None
+    dict(report=cmd_report, render=cmd_render, ffmpeg=cmd_ffmpeg, verify=cmd_verify, metrics=cmd_metrics, list=cmd_list,
+         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state)[a.cmd](a)
 
 if __name__ == "__main__":
     main()
