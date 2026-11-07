@@ -1047,7 +1047,7 @@ def cmd_export_reason(args):
     for t in tracks:
         r = t["reason"]; q = r["params"]
         rep["tracks"].append(dict(name=t["name"], channels=t["channels"], clip_start_ppq=t["start_ppq"],
-                                  clip_delay_ms=round(t["start_ppq"] / 15360 / 2 * 1000, 3), invert=bool(q.get("Invert Phase")),
+                                  delay_ms=round(t["delay_samples"] / 48, 3), delay_samples=t["delay_samples"], zero_pad_samples=t["pad_samples"], invert=bool(q.get("Invert Phase")),
                                   input_gain_db=round(r["input_gain_db"], 2), fader_db=round(r["fader_db"], 2), pan=r["pan"],
                                   width_raw=q.get("Width"), eq={k: v for k, v in q.items() if k not in ("Input Gain", "Level", "Pan", "Width", "Invert Phase")},
                                   eq_fit_rms_db=r["eq_fit_rms_db"] and round(r["eq_fit_rms_db"], 2),

@@ -229,9 +229,16 @@ def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
     for t_node, ts in zip(trks, tracks_spec):
         track = S.Track(t_node, 0)
         sid = reasonspec.free_stream_id(c, taken); taken.add(sid)
-        start = round(ts.get("delay_ms", 0.0) / 1000 * bpm / 1000 / 60 * PPQ_PER_QUARTER)
-        ts["start_ppq"] = start
-        data, e = add_recording_clip(track, trrf_t, tnmf_t, sasf_t, 0, sid, ts["samples"], ts["channels"], rate, bpm,
+        # Sample-exact delay: clip start on a 16-PPQ grid (16 PPQ = exactly 25 samples at 120 BPM / 48 kHz)
+        # plus 0..24 leading zero samples inside the recording.
+        assert bpm == 120_000 and rate == 48_000, "sample-exact delay grid assumes 120 BPM / 48 kHz"
+        d = round(ts.get("delay_ms", 0.0) * rate / 1000)
+        start, pad = 16 * (d // 25), d % 25
+        ts["start_ppq"], ts["pad_samples"], ts["delay_samples"] = start, pad, d
+        smp = ts["samples"]
+        if pad:
+            smp = array("f", bytes(4 * pad * ts["channels"])) + smp
+        data, e = add_recording_clip(track, trrf_t, tnmf_t, sasf_t, 0, sid, smp, ts["channels"], rate, bpm,
                                      start, ts["name"], ts.get("clip_volume", AU.UNITY_VOLUME))
         streams[sid] = data; end = max(end, e)
     S.ensure_song_end(doc, (end // BAR + 2) * BAR)
@@ -346,10 +353,13 @@ def map_to_reason(preset: dict, tracks: list, sr: float = 48000.0):
     master_db = m.get("gain_db", 0.0)
     mx = None
     if lim_on:
-        in_raw = RD.maximizer_gain_db_to_raw(master_db)
-        master_rest = master_db - 20 * math.log10(RD.maximizer_input_gain_linear(in_raw))
+        # Below threshold the Maximizer's gain is in·out·0.99 (output gain is applied even when not limiting),
+        # and it limits at 0.93·out·0.99 (look-ahead). So: out from the ceiling, in = master − out (dB).
         ceil = float(m["limiter_ceiling"])
         out_raw = min(range(128), key=lambda r: abs(0.93 * RD.maximizer_output_gain_linear(r) - ceil))
+        out_db_eff = 20 * math.log10(RD.maximizer_output_gain_linear(out_raw))
+        in_raw = RD.maximizer_gain_db_to_raw(master_db - out_db_eff)
+        master_rest = master_db - out_db_eff - 20 * math.log10(RD.maximizer_input_gain_linear(in_raw))
         att = min(RD.MAXIMIZER_ATTACK_MS, key=lambda k: abs(RD.MAXIMIZER_ATTACK_MS[k] - m.get("attack_ms", 5)))
         rel = min((0, 1), key=lambda k: abs(RD.MAXIMIZER_RELEASE_MS[k] - m.get("release_ms", 50)))
         pb = RD.MAXIMIZER_BP
@@ -415,23 +425,23 @@ def model_render(tracks: list, mx: dict | None, sr: float = 48000.0, with_maximi
     """Render the exported song with the reason_devices model (channel strips + optional Maximizer)."""
     import numpy as np
     import reason_devices as RD
-    n = max(len(t["samples"]) // t["channels"] + int(round(t["start_ppq"] / PPQ_PER_QUARTER / 2 * sr)) for t in tracks)
+    n = max(len(t["samples"]) // t["channels"] + t["delay_samples"] for t in tracks)
     out = np.zeros((n, 2))
     for t in tracks:
         x = np.frombuffer(t["samples"].tobytes(), dtype=np.float32).astype(float)
         if t["channels"] == 2:
             x = x.reshape(-1, 2)
         y = RD.channel_process(x, sr, t["reason"]["params"])
-        d = int(round(t["start_ppq"] / PPQ_PER_QUARTER / 2 * sr))            # 120 BPM: 2 quarters / s
+        d = t["delay_samples"]                                               # clip start (16-PPQ grid) + zero pad
         out[d:d + len(y)] += y
     if mx is not None:
         pb = RD.MAXIMIZER_BP; q = mx["patch_bp"]
-        g = RD.maximizer_input_gain_linear(q[pb["Input Gain"]])
+        g = RD.maximizer_input_gain_linear(q[pb["Input Gain"]]) * RD.maximizer_output_gain_linear(q[pb["Output Gain"]])
         if with_maximizer:
             out = RD.maximizer_process(out, sr, q[pb["Input Gain"]], 1, 1, q[pb["Attack Speed"]], q[pb["Release Speed"]],
                                        q[pb["Output Gain"]], 0, 64)
         else:
-            out = out * g
+            out = out * g        # Maximizer gains without limiting (Reason compensates the look-ahead delay)
     return out
 
 
