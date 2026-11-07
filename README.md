@@ -32,6 +32,8 @@ You recorded a concert with a couple of microphones, say a spaced pair near the 
 |---|---|
 | 🎛 **Preset-based mixing** | Layers of mics with pan, width, delay, an EQ chain and gain, plus a master limiter. Presets can inherit from each other. |
 | 📈 **Analysis** | Spectrum against a tonal guide, EQ curves, each mic's share of the energy per octave, coherent/cancelling summation, L/R correlation and width per octave, vectorscope, LUFS/peak/crest, limiter activity, GCC-PHAT time alignment |
+| 📟 **Live meters** | Vectorscope with persistence, correlation meter, L/R peak/RMS with hold, limiter input + gain-reduction meters and an 8-second GR history, all following what you hear |
+| 🎚 **DAW recipe** | A panel (and `mixlab daw`) listing the exact settings of the preset you're listening to: track fader/pan, bus delay/EQ (as Q)/width/fader, master gain and limiter. Copy or download it as text. |
 | 🎧 **Gapless A/B playback** | All presets play in sync. Switch with keys 1–9, optionally loudness-matched so you judge tone, not volume. Edits update the audio while it plays. |
 | 🤖 **Claude-drivable** | A skill plus slash commands let Claude clone a preset, try changes, measure them and put the result in your GUI for you to listen to |
 | 🎬 **ffmpeg export** | Every preset becomes an equivalent `ffmpeg` command for rendering the full concert. The Python DSP matches ffmpeg to −77 dB. |
@@ -107,6 +109,16 @@ Claude works on a **clone** of your preset, never on your originals. It uses `mi
   - mute layers, adjust per-input pan and gain
   - clone, delete, or show the ffmpeg command
   - changes save to `presets.json` straight away
+- **Live monitor (sticky):**
+  - vectorscope, correlation, output L/R meters (RMS bar, peak line, 1.5 s hold)
+  - limiter input peak against the ceiling, limiter gain reduction, and its last 8 s
+  - limiter readings come from the render and follow the playhead; the other meters measure the audio you hear
+- **DAW settings, what you hear:** the active preset translated into DAW terms:
+  - tracks: fader and pan
+  - buses: delay in ms and samples, EQ bands with frequency/gain/Q, width as M/S side gain, fader
+  - master: gain into the limiter, ceiling, attack, release
+  - *Copy as text* / *Download .txt*
+  - loudness-match is monitoring only and never part of the settings
 - **Graphs and tables:** summary metrics, tonal-balance table coloured against the guide, master spectrum, change against the first preset, EQ curves, raw inputs, mic energy share, summation gain, correlation and side/mid per octave, vectorscopes, short-term loudness and limiter gain reduction, alignment table.
 - **Follows external changes:** if `presets.json` or `state.json` changes (from Claude, the CLI or an editor), the GUI reloads and re-analyses.
 
@@ -183,6 +195,7 @@ All commands run as `bin/mixlab <command>`. Inside Claude Code the same commands
 | `render --preset P --out x.wav [--fade s]` | Render an excerpt with the Python chain |
 | `ffmpeg --preset P [--start 0 --dur 0] --out full.wav` | Print the equivalent ffmpeg command (`--dur 0` = whole file) |
 | `verify --preset P` | Null-test the Python DSP against ffmpeg |
+| `daw --preset P [--json]` | DAW recipe: track fader/pan, bus delay/EQ (Q)/width/fader, master gain + limiter |
 
 `set` paths address layers by **name** and lists by **index**. Values are JSON, and `delete` removes an entry:
 
@@ -229,6 +242,11 @@ Environment variables:
 - `MIXLAB_PORT`: GUI port (default 8765)
 
 ## Accuracy and verification
+
+- **DAW recipe:**
+  - bell Q = analog equivalent of the octave bandwidth, 1/(2·sinh(ln2/2·BW)); within 0.06 dB of our filter up to 3 kHz and 0.3 dB at 8 kHz
+  - shelf Q is exact for RBJ-style shelves, with the frequency at the half-gain point; other EQ plugins define shelves differently, so match by ear or with the EQ plot
+  - pan law: −3 dB constant power
 
 - **EQ:** biquads use the RBJ cookbook formulas exactly as ffmpeg's `equalizer` / `highshelf` / `highpass` filters do. `mixlab verify` null-tests a preset against ffmpeg and typically reaches −77 dB.
 - **Limiter:** a look-ahead peak limiter that approximates ffmpeg's `alimiter`. It is not bit-exact, so loud passages can differ slightly between GUI playback and an ffmpeg render.

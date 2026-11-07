@@ -40,6 +40,7 @@ M report --presets current,try1 [--out DIR] [--render]          # static HTML re
 M render --preset try1 --start 39:08 --dur 180 --fade 3 --out x.wav
 M ffmpeg --preset try1 --start 0 --dur 0 --out full.wav         # whole-recording ffmpeg command
 M verify --preset try1 --dur 30                                 # python vs ffmpeg null test
+M daw --preset try1 [--json]                                    # plain DAW recipe: track fader/pan, bus delay/EQ(Q)/width/fader, limiter
 ```
 `--start/--dur` default to the GUI's current excerpt. Times accept `mm:ss`. Edited presets are saved standalone (their `extends` is dropped).
 
@@ -64,6 +65,7 @@ M verify --preset try1 --dur 30                                 # python vs ffmp
 4. Run `metrics --presets <base>,<clone>` and compare against the guide.
 5. Run `state --compare <base>,<clone> --edit <clone>` so the user can A/B by ear: keys 1–9, loudness-matched.
 6. Report the numbers and what to listen for. The user's ears decide.
+7. When the user wants to rebuild a mix in their DAW, give them `M daw --preset <name>` output (the GUI shows the same panel for whatever preset is playing).
 
 ## Pitfalls
 - Very large shelves (> +12 dB) mostly add hiss; dull close mics can't be fully fixed by EQ.

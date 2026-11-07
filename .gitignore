@@ -3,3 +3,5 @@ out/
 server.log
 state.json
 *.tmp
+__pycache__/
+*.pyc

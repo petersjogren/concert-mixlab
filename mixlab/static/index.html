@@ -21,6 +21,11 @@ td.good{background:var(--good)}td.warn{background:var(--warn)}td.bad{background:
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}.chk{display:flex;gap:10px;flex-wrap:wrap}
 pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;padding:6px;border-radius:4px;max-height:160px;overflow:auto}
 .note{color:var(--mut);font-size:11px;margin:4px 0}
+#monitor{position:sticky;top:0;z-index:4;display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
+.mbox{display:flex;flex-direction:column;align-items:center;gap:3px}.mbox .lbl{color:var(--mut);font-size:11px}
+.mbox canvas{background:#0d0f13;border:1px solid var(--bd);border-radius:4px}.ro{font:12px ui-monospace,Menlo,monospace;color:var(--fg)}
+.ro b{color:var(--acc)}#daw table td,#daw table th{font-size:12px}#daw h4{margin:10px 0 4px;font-size:12px;color:var(--acc)}
+#daw .big{font-size:15px;font-weight:600}.pill{display:inline-block;padding:1px 7px;border-radius:9px;background:#2c313c;margin-left:6px;font-size:11px}
 </style></head><body>
 <header>
   <h1>🎻 concert-mixlab</h1>
@@ -48,6 +53,19 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;pad
     <div id="editor"></div>
   </div>
   <div id="main">
+    <div class="card" id="monitor">
+      <div class="mbox"><span class="lbl">Vectorscope (live)</span><canvas id="cv_vec" width="220" height="220"></canvas>
+        <span class="lbl">zoom <input type="range" id="vzoom" min="1" max="16" step="0.5" value="4" style="width:120px"></span></div>
+      <div class="mbox"><span class="lbl">Correlation</span><canvas id="cv_corr" width="44" height="220"></canvas><span class="ro" id="ro_corr">–</span></div>
+      <div class="mbox"><span class="lbl">Output L / R</span><canvas id="cv_lr" width="70" height="220"></canvas><span class="ro" id="ro_lr">–</span></div>
+      <div class="mbox"><span class="lbl">Limiter in · GR</span><canvas id="cv_lim" width="90" height="220"></canvas><span class="ro" id="ro_lim">–</span></div>
+      <div class="mbox" style="flex:1;min-width:260px;align-items:stretch"><span class="lbl">Limiter gain reduction, last 8 s</span>
+        <canvas id="cv_grh" width="420" height="110" style="width:100%"></canvas>
+        <div class="ro" id="ro_info" style="margin-top:6px;line-height:1.6"></div>
+        <div class="note">Live meters show what you hear (active preset, after loudness-match). Limiter meters come from the render, synced to the playhead.</div></div>
+    </div>
+    <div class="card" id="daw"><h3><span>🎚 DAW settings — what you hear: <span class="big" id="daw_name">–</span></span>
+      <span><button id="daw_copy">Copy as text</button> <button id="daw_dl">Download .txt</button></span></h3><div id="daw_body" class="mut">Analyse and press play/select a preset.</div></div>
     <div class="card"><h3>Master summary</h3><div id="summary"></div><div class="note">Centroid ↑ = brighter. L/R corr 0.3–0.7 ≈ natural orchestral image; near 0 = very wide (hole-in-middle risk). GR = limiter gain reduction.</div></div>
     <div class="card"><h3>Tonal balance (dB relative to 0.5–2 kHz) vs rough guide</h3><div id="tonal"></div></div>
     <div class="grid">
@@ -208,6 +226,7 @@ function draw(d){
   $('align').innerHTML=d.align.length?`<table><tr><th class="l">reference</th><th class="l">input</th><th>lag ms</th><th>IQR ms</th><th>confidence</th><th>windows</th></tr>`+
     d.align.map(a=>`<tr><td class="l">${a.ref}</td><td class="l">${a.layer}</td><td>${a.lag_ms.toFixed(2)}</td><td class="${a.spread_ms<2?'good':a.spread_ms<6?'warn':'bad'}">${a.spread_ms.toFixed(2)}</td><td>${a.confidence.toFixed(3)}</td><td>${a.windows}</td></tr>`).join('')+'</table>':'<span class="mut">excerpt shorter than one 10 s window</span>';
   renderPlayButtons();
+  const names=P.map(p=>p.name);renderDaw(A.active&&names.includes(A.active)?A.active:names[names.length>1?1:0]);
 }
 
 // ---------------------------------------------------------------- audio A/B
@@ -221,7 +240,7 @@ async function loadAudio(d){
   Object.keys(A.bufs).forEach(n=>{if(!want.includes(n)){delete A.bufs[n];delete A.hashes[n]}});
   if(!A.active||!want.includes(A.active))A.active=want[want.length>1?1:0];
   A.dur=Math.max(...Object.values(A.bufs).map(b=>b.duration));
-  status($('status').textContent.replace(' · loading audio…',' · audio ready'));renderPlayButtons();
+  status($('status').textContent.replace(' · loading audio…',' · audio ready'));renderPlayButtons();renderDaw(A.active);
   if(A.playing){const pos=curPos();stop(false);play(pos)}
 }
 function matchGain(n){if(!$('lmatch').checked||!S.data)return 1;const L=Object.fromEntries(S.data.presets.map(p=>[p.name,p.metrics.lufs]));const t=Math.min(...Object.values(L));return Math.pow(10,(t-L[n])/20)}
@@ -229,12 +248,12 @@ function setGains(){Object.entries(A.gains).forEach(([n,g])=>g.gain.setTargetAtT
 function curPos(){return A.playing?(A.ctx.currentTime-A.t0+A.off)%A.dur:A.off}
 function play(pos=A.off){if(!Object.keys(A.bufs).length)return;A.ctx.resume();A.srcs=[];A.gains={};const when=A.ctx.currentTime+0.05;
   Object.entries(A.bufs).forEach(([n,b])=>{const s=A.ctx.createBufferSource();s.buffer=b;s.loop=true;const g=A.ctx.createGain();g.gain.value=n==A.active?matchGain(n):0;
-    s.connect(g).connect(A.ctx.destination);s.start(when,pos%b.duration);A.srcs.push(s);A.gains[n]=g});
+    s.connect(g).connect(bus());s.start(when,pos%b.duration);A.srcs.push(s);A.gains[n]=g});
   A.t0=when;A.off=pos;A.playing=true;$('play').textContent='■ Stop';$('play').classList.add('on')}
 function stop(resetBtn=true){A.off=curPos();A.srcs.forEach(s=>{try{s.stop()}catch(e){}});A.srcs=[];A.playing=false;if(resetBtn){$('play').textContent='▶ Play';$('play').classList.remove('on')}}
 function renderPlayButtons(){$('pbtns').innerHTML=(S.data?.presets||[]).map((p,i)=>`<button class="pbtn ${p.name==A.active?'on':''}" data-n="${p.name}" style="border-color:${colorOf(p.name)}">${i+1} ${p.name}</button>`).join(' ');
   $('pbtns').querySelectorAll('button').forEach(b=>b.onclick=()=>select(b.dataset.n))}
-function select(n){A.active=n;if(A.playing)setGains();renderPlayButtons()}
+function select(n){A.active=n;if(A.playing)setGains();renderPlayButtons();renderDaw(n)}
 $('play').onclick=()=>A.playing?stop():play();
 $('lmatch').onchange=()=>A.playing&&setGains();
 $('seek').oninput=()=>{const pos=$('seek').value/1000*A.dur;if(A.playing){stop(false);play(pos)}else A.off=pos};
@@ -242,6 +261,89 @@ document.addEventListener('keydown',e=>{if(['INPUT','SELECT'].includes(e.target.
   if(e.code=='Space'){e.preventDefault();A.playing?stop():play()}const k=+e.key;if(k>=1&&k<=9&&S.data?.presets[k-1])select(S.data.presets[k-1].name)});
 setInterval(()=>{if(A.dur){const p=curPos();$('time').textContent=`${fmtT(p)} / ${fmtT(A.dur)}  (concert ${fmtT((S.data?parseT($('start').value):0)+p)})`;if(document.activeElement!==$('seek'))$('seek').value=1000*p/A.dur}},200);
 const parseT=t=>String(t).split(':').reduce((a,v)=>a*60+(+v),0);
+
+// ---------------------------------------------------------------- live meters
+function bus(){
+  if(!A.bus){A.bus=A.ctx.createGain();A.bus.connect(A.ctx.destination);const sp=A.ctx.createChannelSplitter(2);A.bus.connect(sp);
+    A.anL=A.ctx.createAnalyser();A.anR=A.ctx.createAnalyser();A.anL.fftSize=A.anR.fftSize=2048;sp.connect(A.anL,0);sp.connect(A.anR,1);
+    A.tL=new Float32Array(2048);A.tR=new Float32Array(2048)}
+  return A.bus}
+const M={corr:0,pk:[-90,-90],hold:[-90,-90],holdT:[0,0],rms:[-90,-90]};
+const db=v=>20*Math.log10(Math.max(v,1e-9));
+function meterBar(c,x,w,val,lo,hi,color){const h=c.canvas.height,y=h-(Math.min(Math.max(val,lo),hi)-lo)/(hi-lo)*h;c.fillStyle=color;c.fillRect(x,y,w,h-y);return y}
+function scaleTicks(c,x,lo,hi,ticks){const h=c.canvas.height;c.fillStyle='#8e95a5';c.font='9px Menlo';ticks.forEach(t=>{const y=h-(t-lo)/(hi-lo)*h;c.fillRect(x,y,4,1);c.fillText(String(t),x+6,Math.min(h-2,Math.max(8,y+3)))})}
+function activeMeter(){return S.data?.presets.find(p=>p.name==A.active)}
+function drawMeters(){
+  const vec=$('cv_vec').getContext('2d'),W=220,cx=W/2;const playing=A.playing&&A.anL;
+  // vectorscope (persistence)
+  vec.fillStyle=playing?'rgba(13,15,19,0.28)':'rgba(13,15,19,1)';vec.fillRect(0,0,W,W);
+  vec.strokeStyle='#2a303b';vec.lineWidth=1;vec.beginPath();vec.moveTo(cx,0);vec.lineTo(cx,W);vec.moveTo(0,cx);vec.lineTo(W,cx);
+  vec.moveTo(0,0);vec.lineTo(W,W);vec.moveTo(W,0);vec.lineTo(0,W);vec.stroke();
+  vec.fillStyle='#5b6372';vec.font='10px Menlo';vec.fillText('M',cx+3,10);vec.fillText('L',6,14);vec.fillText('R',W-12,14);vec.fillText('+S',W-18,cx-4);vec.fillText('−S',2,cx-4);
+  if(playing){A.anL.getFloatTimeDomainData(A.tL);A.anR.getFloatTimeDomainData(A.tR);const z=+$('vzoom').value;
+    let sl=0,sr=0,slr=0,pl=0,pr=0;vec.fillStyle=colorOf(A.active);
+    for(let i=0;i<A.tL.length;i++){const l=A.tL[i],r=A.tR[i];sl+=l*l;sr+=r*r;slr+=l*r;pl=Math.max(pl,Math.abs(l));pr=Math.max(pr,Math.abs(r));
+      const s=(l-r)*0.7071,m=(l+r)*0.7071;vec.fillRect(cx+s*z*cx,cx-m*z*cx,1.5,1.5)}
+    const n=A.tL.length,c=slr/Math.sqrt(sl*sr+1e-20);M.corr=0.85*M.corr+0.15*(isFinite(c)?c:0);
+    const now=performance.now();[[pl,sl],[pr,sr]].forEach(([p,s],k)=>{const pd=db(p);M.pk[k]=Math.max(pd,M.pk[k]-1.2);M.rms[k]=0.7*M.rms[k]+0.3*db(Math.sqrt(s/n));
+      if(pd>=M.hold[k]||now-M.holdT[k]>1500){M.hold[k]=pd;M.holdT[k]=now}})}
+  else{M.corr*=0.9;M.pk=M.pk.map(v=>Math.max(-90,v-2));M.rms=M.rms.map(v=>Math.max(-90,v-2))}
+  // correlation
+  const cc=$('cv_corr').getContext('2d'),H=220;cc.clearRect(0,0,44,H);cc.fillStyle='#1b1f27';cc.fillRect(8,0,18,H);
+  const y0=H/2,yc=H/2-M.corr*H/2;cc.fillStyle=M.corr>=0.3?'#2ed573':M.corr>=0?'#ffd32a':'#ff4757';cc.fillRect(8,Math.min(y0,yc),18,Math.abs(yc-y0)||1);
+  cc.fillStyle='#8e95a5';cc.font='9px Menlo';cc.fillText('+1',28,9);cc.fillText('0',30,y0+3);cc.fillText('−1',28,H-2);cc.fillRect(8,y0,18,1);
+  $('ro_corr').textContent=M.corr.toFixed(2);
+  // L/R output
+  const lc=$('cv_lr').getContext('2d');lc.clearRect(0,0,70,H);const lo=-60,hi=0;
+  [0,1].forEach(k=>{const x=4+k*22;lc.fillStyle='#1b1f27';lc.fillRect(x,0,18,H);
+    meterBar(lc,x,18,M.rms[k],lo,hi,M.rms[k]>-6?'#ff9f43':'#2ed573');const yp=H-(Math.min(Math.max(M.pk[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle='#e6e8ee';lc.fillRect(x,yp,18,2);
+    const yh=H-(Math.min(Math.max(M.hold[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle=M.hold[k]>-1?'#ff4757':'#ffd32a';lc.fillRect(x,yh,18,1)});
+  scaleTicks(lc,48,lo,hi,[0,-6,-12,-24,-36,-48]);
+  $('ro_lr').textContent=`pk ${Math.max(...M.hold).toFixed(1)}`;
+  // limiter (from render, synced to playhead)
+  const mc=$('cv_lim').getContext('2d');mc.clearRect(0,0,90,H);const am=activeMeter();
+  const ceil=am?.daw?.master?.limiter?.ceiling_dbfs;let gr=0,pre=-90,idx=0;
+  if(am&&A.dur){idx=Math.floor(curPos()*am.meter.rate);gr=am.meter.gr[idx]??0;pre=am.meter.pre[idx]??-90}
+  mc.fillStyle='#1b1f27';mc.fillRect(4,0,18,H);mc.fillRect(40,0,18,H);
+  meterBar(mc,4,18,pre,-30,12,pre>(ceil??0)?'#ff9f43':'#5aa9ff');
+  if(ceil!=null){const yc2=H-(ceil+30)/42*H;mc.fillStyle='#ff4757';mc.fillRect(0,yc2,26,2)}
+  const ygr=Math.min(-gr,24)/24*H;mc.fillStyle='#ff4757';mc.fillRect(40,0,18,ygr);
+  mc.fillStyle='#8e95a5';mc.font='9px Menlo';mc.fillText('in',6,H-3);mc.fillText('GR',42,H-3);
+  [0,-3,-6,-12,-24].forEach(t=>{const y=-t/24*H;mc.fillRect(58,y,4,1);mc.fillText(String(t),63,Math.max(8,Math.min(H-12,y+3)))});
+  $('ro_lim').textContent=am?(am.daw.master.limiter?`in ${pre.toFixed(1)} · GR ${gr.toFixed(1)}`:'limiter off'):'–';
+  // GR history (8 s window ending at the playhead)
+  const gc=$('cv_grh'),g2=gc.getContext('2d'),GW=gc.width,GH=gc.height;g2.fillStyle='#0d0f13';g2.fillRect(0,0,GW,GH);
+  g2.fillStyle='#2a303b';g2.font='9px Menlo';[-1,-3,-6,-12].forEach(t=>{const y=-t/12*GH;g2.fillRect(0,y,GW,1);g2.fillStyle='#5b6372';g2.fillText(t+' dB',2,y-2);g2.fillStyle='#2a303b'});
+  if(am){const n=8*am.meter.rate,st=idx-n;g2.fillStyle='rgba(255,71,87,0.75)';
+    for(let i=0;i<n;i++){const v=am.meter.gr[st+i];if(v==null||v>-0.05)continue;const x=i/n*GW,h=Math.min(-v,12)/12*GH;g2.fillRect(x,0,GW/n+0.5,h)}
+    let mx=0;for(let i=Math.max(0,st);i<=idx;i++)mx=Math.min(mx,am.meter.gr[i]??0);
+    const m=am.metrics,mg=matchGain(am.name);
+    $('ro_info').innerHTML=`listening: <b>${am.name}</b> · ${m.lufs.toFixed(1)} LUFS · max GR (8 s) <b>${mx.toFixed(1)} dB</b> · excerpt GR&gt;1 dB ${m.gr_time_pct_over_1db.toFixed(1)}% of time`+
+      (mg!==1?`<br><span class="mut">monitor loudness-match ${db(mg).toFixed(1)} dB (not part of the settings)</span>`:'')}
+  requestAnimationFrame(drawMeters);
+}
+requestAnimationFrame(drawMeters);
+
+// ---------------------------------------------------------------- DAW settings panel
+const f1=v=>(v>0?'+':'')+(+v).toFixed(1);
+function renderDaw(n){
+  const p=S.data?.presets.find(x=>x.name==n);if(!p)return;const d=p.daw;$('daw_name').textContent=n;$('daw_name').style.color=colorOf(n);
+  let h=`<h4>1 · Audio tracks <span class="mut">(fader = clip/trim gain; route each track to its bus)</span></h4><table><tr><th class="l">track</th><th class="l">file</th><th class="l">channels</th><th>fader dB</th><th class="l">pan</th><th class="l">→ bus</th></tr>`+
+    d.tracks.map(t=>`<tr><td class="l">${t.name}</td><td class="l">${t.file}</td><td class="l">${t.channels}</td><td><b>${f1(t.fader_db)}</b></td><td class="l"><b>${t.pan}</b></td><td class="l">${t.bus}</td></tr>`).join('')+'</table>';
+  h+=`<h4>2 · Buses <span class="mut">(delay, EQ, width and fader are linear, so their order on the bus doesn't matter)</span></h4>`;
+  d.buses.forEach(b=>{if(b.muted){h+=`<div class="card"><b>${b.name}</b> <span class="pill">MUTED</span></div>`;return}
+    h+=`<div class="card"><b>${b.name}</b> <span class="pill">fader ${f1(b.fader_db)} dB</span><span class="pill">delay ${b.delay_ms} ms = ${b.delay_samples_48k} smp @48k</span>`+
+      (b.width!==1?`<span class="pill">width ${(b.width*100).toFixed(0)}% · M/S side ${b.side_gain_db==null?'−∞':f1(b.side_gain_db)} dB</span>`:'<span class="pill">width 100%</span>')+
+      `<table style="margin-top:6px"><tr><th>#</th><th class="l">type</th><th>freq Hz</th><th>gain dB</th><th>Q</th><th class="l">notes</th></tr>`+
+      (b.eq.length?b.eq.map((e,k)=>`<tr style="${e.bypass?'opacity:.45':''}"><td>${k+1}</td><td class="l">${e.kind}</td><td><b>${e.freq_hz}</b></td><td><b>${e.gain_db==null?'':f1(e.gain_db)}</b></td><td><b>${e.q}</b></td><td class="l mut">${
+        e.bypass?'BYPASSED · ':''}${e.bw_oct!=null?`= ${e.bw_oct} oct bandwidth`:e.slope!=null?`slope ${e.slope}; freq = half-gain point (RBJ)`:'Butterworth'}</td></tr>`).join(''):'<tr><td colspan="6" class="l mut">no EQ</td></tr>')+'</table></div>'});
+  const m=d.master;h+=`<h4>3 · Master</h4><table><tr><th class="l">gain into limiter</th><th class="l">limiter ceiling</th><th class="l">attack / look-ahead</th><th class="l">release</th></tr><tr><td class="l"><b>${f1(m.gain_before_limiter_db)} dB</b> <span class="mut">(limiter input/drive, or a gain plugin before it)</span></td>`+
+    (m.limiter?`<td class="l"><b>${m.limiter.ceiling_dbfs} dBFS</b></td><td class="l"><b>${m.limiter.attack_lookahead_ms} ms</b></td><td class="l"><b>${m.limiter.release_ms} ms</b></td>`:'<td class="l" colspan="3">off</td>')+'</tr></table>';
+  h+=`<div class="note">Session 48 kHz · pan law −3 dB constant power (hard-panned tracks are unaffected) · bells: Q is the analog equivalent of the octave bandwidth · shelves: frequency is the half-gain point; shelf "Q"/slope conventions differ between EQ plugins, so match the curve by ear or with the EQ plot · HPF = 12 dB/oct · this limiter is sample-peak; a true-peak limiter will catch slightly more.</div>`;
+  $('daw_body').innerHTML=h;$('daw_body').classList.remove('mut');S.dawText=p.daw_text;
+}
+$('daw_copy').onclick=async()=>{if(!S.dawText)return;await navigator.clipboard.writeText(S.dawText);$('daw_copy').textContent='Copied ✓';setTimeout(()=>$('daw_copy').textContent='Copy as text',1500)};
+$('daw_dl').onclick=()=>{if(!S.dawText)return;const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([S.dawText],{type:'text/plain'}));a.download=`daw-settings-${$('daw_name').textContent}.txt`;a.click()};
 
 // ---------------------------------------------------------------- follow external edits (Claude Code)
 setInterval(async()=>{if(S.saving||S.dirty)return;try{const v=await api('/api/version');

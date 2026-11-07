@@ -371,8 +371,13 @@ def analyse(name, preset, src_dir, start, dur):
                               sum_gain_db=10 * math.log10(mixP[m].sum() / tot)))
     full = {k: float(P[band_mask(f, 40, 20000)].sum()) for k, P in lspec.items()}; tot = sum(full.values())
     corr = float(np.sum(Plr) / math.sqrt(np.sum(Pll) * np.sum(Prr)))
+    # 50 Hz meter streams for live playback metering (synced to the excerpt timeline)
+    blk = SR // 50; nb = len(gr) // blk
+    meter = dict(rate=50,
+                 gr=gr[:nb * blk].reshape(nb, blk).min(1).round(1).tolist(),
+                 pre=(20 * np.log10(np.max(np.abs(pre[:nb * blk]).reshape(nb, blk, 2), axis=(1, 2)) + 1e-9)).round(1).tolist())
     return dict(
-        name=name, preset=preset, f=f, P=Pm, stereo=stereo_by_band(f, Pll, Prr, Plr), contrib=band_rows,
+        name=name, preset=preset, f=f, P=Pm, stereo=stereo_by_band(f, Pll, Prr, Plr), contrib=band_rows, meter=meter,
         contrib_total={k: v / tot for k, v in full.items()}, st=st, gr=gr, y=y,
         metrics=dict(lufs=lufs, peak_dbfs=20 * math.log10(np.max(np.abs(y)) + 1e-12),
                      crest_db=20 * math.log10(np.max(np.abs(y)) / (np.sqrt(np.mean(y ** 2)) + 1e-12)),
@@ -623,8 +628,92 @@ def analysis_json(results, raw=None, align=None):
                         balance=[s["balance_db"] for s in r["stereo"]]),
             vector=np.log10(H + 1).round(2).tolist(),
             st=[round(float(v), 2) for v in r["st"]],
-            gr=g[:nb * SR].reshape(nb, SR).min(1).round(2).tolist() if nb else []))
+            gr=g[:nb * SR].reshape(nb, SR).min(1).round(2).tolist() if nb else [],
+            meter=r["meter"], daw=daw_recipe(r["preset"]), daw_text=daw_text(r["name"], daw_recipe(r["preset"]))))
     return out
+
+# ----------------------------------------------------------------------------- DAW recipe
+def peak_q(oct_bw):
+    """Analog-equivalent Q of a peaking band given its bandwidth in octaves (RBJ)."""
+    return 1 / (2 * math.sinh(math.log(2) / 2 * oct_bw))
+
+def shelf_q(g, slope):
+    """Analog-equivalent Q of an RBJ shelf given gain (dB) and shelf slope S."""
+    A = 10 ** (g / 40)
+    return 1 / math.sqrt((A + 1 / A) * (1 / slope - 1) + 2)
+
+def pan_text(p):
+    if abs(p) < 0.005: return "C"
+    return f"{abs(p) * 100:.0f}% {'L' if p < 0 else 'R'}"
+
+def daw_eq_band(f):
+    t = f["type"]; d: dict = dict(type=t, bypass=bool(f.get("bypass")), freq_hz=f["f"])
+    if t == "peak":
+        d.update(kind="Bell", gain_db=f["g"], q=round(peak_q(f.get("oct", 1.0)), 2), bw_oct=f.get("oct", 1.0))
+    elif t in ("highshelf", "lowshelf"):
+        d.update(kind="High shelf" if t == "highshelf" else "Low shelf", gain_db=f["g"],
+                 q=round(shelf_q(f["g"], f.get("slope", 0.5)), 2), slope=f.get("slope", 0.5))
+    else:
+        q = f.get("q", 0.707)
+        d.update(kind=("High-pass" if t == "highpass" else "Low-pass") + " 12 dB/oct", gain_db=None, q=round(q, 3))
+    return d
+
+def daw_recipe(preset):
+    """Translate a preset into plain DAW settings: tracks (fader/pan), buses (delay/EQ/width/fader), master (gain/limiter).
+    Layer processing is linear and identical on L/R, so the order of delay/EQ/width/fader on a bus does not matter."""
+    tracks, buses = [], []
+    for L in preset["layers"]:
+        if L.get("mute"):
+            buses.append(dict(name=L["name"], muted=True)); continue
+        lg = L.get("gain_db", 0.0)
+        byfile = {}
+        for i in L["inputs"]:
+            byfile.setdefault(i["file"], []).append(i)
+        for fn, ins in byfile.items():
+            chs = {i.get("ch", 0): i for i in ins}
+            if set(chs) == {0, 1} and chs[0].get("pan", 0) == -1 and chs[1].get("pan", 0) == 1 \
+                    and chs[0].get("gain_db", 0) == chs[1].get("gain_db", 0):
+                tracks.append(dict(name=f"{L['name']}: {fn}", file=fn, channels="stereo", fader_db=chs[0].get("gain_db", 0.0),
+                                   pan="C (stereo, L 100% / R 100%)", bus=L["name"]))
+            else:
+                for i in ins:
+                    tracks.append(dict(name=f"{L['name']}: {fn} ch{i.get('ch', 0) + 1}", file=fn,
+                                       channels=f"mono (channel {i.get('ch', 0) + 1})", fader_db=i.get("gain_db", 0.0),
+                                       pan=pan_text(i.get("pan", 0.0)), bus=L["name"]))
+        w = L.get("width", 1.0)
+        buses.append(dict(name=L["name"], muted=False, delay_ms=L.get("delay_ms", 0.0),
+                          delay_samples_48k=int(round(L.get("delay_ms", 0.0) * SR / 1000)),
+                          eq=[daw_eq_band(f) for f in L.get("filters", [])], fader_db=lg, width=w,
+                          side_gain_db=None if w == 1 else (round(20 * math.log10(w), 1) if w > 0 else float("-inf"))))
+    m = preset.get("master", {}); c = m.get("limiter_ceiling")
+    master = dict(gain_before_limiter_db=m.get("gain_db", 0.0),
+                  limiter=None if not c else dict(ceiling_dbfs=round(20 * math.log10(c), 2), attack_lookahead_ms=m.get("attack_ms", 5),
+                                                  release_ms=m.get("release_ms", 50)))
+    return dict(tracks=tracks, buses=buses, master=master)
+
+def daw_text(name, r):
+    out = [f"DAW SETTINGS — preset '{name}'  (48 kHz session, pan law −3 dB constant power)", "",
+           "1) AUDIO TRACKS (fader = trim/clip gain, route each to its bus)"]
+    for t in r["tracks"]:
+        out.append(f"   {t['name']:<40} {t['channels']:<22} fader {t['fader_db']:+.1f} dB   pan {t['pan']:<26} -> bus '{t['bus']}'")
+    out.append(""); out.append("2) BUSES (order of these linear steps on the bus does not matter)")
+    for b in r["buses"]:
+        if b.get("muted"):
+            out.append(f"   [{b['name']}] MUTED"); continue
+        out.append(f"   [{b['name']}]  fader {b['fader_db']:+.2f} dB   delay {b['delay_ms']:g} ms ({b['delay_samples_48k']} samples @48k)"
+                   + ("" if b["width"] == 1 else f"   width {b['width'] * 100:.0f}% (M/S: side {b['side_gain_db']:+.1f} dB)"))
+        for k, e in enumerate(b["eq"]):
+            g = "" if e["gain_db"] is None else f"{e['gain_db']:+.1f} dB"
+            extra = f"  (= {e['bw_oct']:g} oct)" if "bw_oct" in e else f"  (slope {e['slope']:g}, freq = half-gain point)" if "slope" in e else ""
+            out.append(f"      EQ{k + 1}: {e['kind']:<22} {e['freq_hz']:>7g} Hz  {g:>9}  Q {e['q']:<5}{extra}{'   [BYPASSED]' if e['bypass'] else ''}")
+    m = r["master"]; out.append(""); out.append("3) MASTER")
+    out.append(f"   gain into limiter {m['gain_before_limiter_db']:+.2f} dB (use limiter input/drive or a gain plugin BEFORE it)")
+    if m["limiter"]:
+        lm = m["limiter"]
+        out.append(f"   limiter: ceiling {lm['ceiling_dbfs']:+.2f} dBFS, attack/look-ahead {lm['attack_lookahead_ms']} ms, release {lm['release_ms']} ms")
+    else:
+        out.append("   limiter: off")
+    return "\n".join(out)
 
 def analyse_many(cfg, names, start, dur, with_raw=True):
     res = [analyse(n, cfg["resolved"][n], cfg["source_dir"], start, dur) for n in names]
@@ -833,6 +922,11 @@ def cmd_source(args):
                                    "-of", "csv=p=0", os.path.join(src, f)], capture_output=True, text=True).stdout.split()
             print(f"  {f:32s} {' '.join(info)}")
 
+def cmd_daw(args):
+    """Print plain DAW settings (tracks, buses, EQ in Q, limiter) for a preset."""
+    cfg = load_config(args.config); r = daw_recipe(cfg["resolved"][args.preset])
+    print(json.dumps(r, indent=1) if args.json else daw_text(args.preset, r))
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -863,6 +957,8 @@ def main():
     p.add_argument("--excerpt", help="name from presets.json 'excerpts'"); p.add_argument("--compare", help="comma list of presets"); p.add_argument("--edit")
     p = sp.add_parser("source", help="set recordings folder / add excerpt / list files"); cfgarg(p); p.add_argument("dir", nargs="?")
     p.add_argument("--excerpt", nargs=3, metavar=("NAME", "START", "DUR"), help="save a named excerpt, e.g. --excerpt Kyrie 22:10 150")
+    p = sp.add_parser("daw", help="plain DAW settings for a preset (EQ as Q, pan, faders, limiter)"); cfgarg(p)
+    p.add_argument("--preset", required=True); p.add_argument("--json", action="store_true")
     a = ap.parse_args()
     if hasattr(a, "dur") and a.cmd != "state":
         st = read_state(a.config)
@@ -870,7 +966,7 @@ def main():
         if a.dur is None: a.dur = float(st.get("dur", 60.0))
         if a.dur == 0: a.dur = None
     dict(report=cmd_report, render=cmd_render, ffmpeg=cmd_ffmpeg, verify=cmd_verify, metrics=cmd_metrics, list=cmd_list,
-         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state, source=cmd_source)[a.cmd](a)
+         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state, source=cmd_source, daw=cmd_daw)[a.cmd](a)
 
 if __name__ == "__main__":
     main()
