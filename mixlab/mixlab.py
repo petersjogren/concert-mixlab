@@ -166,11 +166,11 @@ def routing_matrix(layer):
     ins = layer["inputs"]; M = np.zeros((2, len(ins)))
     for j, inp in enumerate(ins):
         p = float(inp.get("pan", 0.0)); th = (p + 1) * math.pi / 4
-        g = 10 ** (inp.get("gain_db", 0.0) / 20)
+        g = 10 ** (inp.get("gain_db", 0.0) / 20) * (-1 if inp.get("invert") else 1)
         M[0, j] = math.cos(th) * g; M[1, j] = math.sin(th) * g
     w = float(layer.get("width", 1.0))
     W = np.array([[(1 + w) / 2, (1 - w) / 2], [(1 - w) / 2, (1 + w) / 2]])
-    return W @ M
+    return (W @ M) * (-1 if layer.get("invert") else 1)
 
 def db2lin(d): return 10 ** (d / 20)
 
@@ -328,13 +328,19 @@ def rel_level(f, P, lo, hi, ref=(500, 2000)):
     return 10 * np.log10(P[band_mask(f, lo, hi)].mean() / P[band_mask(f, *ref)].mean())
 
 def gcc_phat(u, w, maxlag=int(0.05 * SR)):
+    """Signed GCC-PHAT: lag (samples, fractional via parabolic interpolation) of the strongest peak by magnitude,
+    and its signed value. A negative peak means w is polarity-inverted relative to u."""
     n = len(u) + len(w); R = np.fft.rfft(w, n) * np.conj(np.fft.rfft(u, n)); R /= np.abs(R) + 1e-12
-    cc = np.fft.irfft(R, n); cc = np.concatenate([cc[-maxlag:], cc[:maxlag + 1]]); i = int(np.argmax(cc))
-    return i - maxlag, float(cc[i])
+    cc = np.fft.irfft(R, n); cc = np.concatenate([cc[-maxlag:], cc[:maxlag + 1]]); i = int(np.argmax(np.abs(cc)))
+    frac = 0.0
+    if 0 < i < len(cc) - 1:
+        a, b, c = abs(cc[i - 1]), abs(cc[i]), abs(cc[i + 1]); den = a - 2 * b + c
+        frac = 0.5 * (a - c) / den if den != 0 else 0.0
+    return i - maxlag + frac, float(cc[i])
 
 def alignment(preset, src_dir, start, dur, win=10):
     """GCC-PHAT lag of every input channel of later layers vs every input of the first layer.
-    Median over `win`-second windows; spread (IQR) tells how trustworthy it is."""
+    Median over `win`-second windows; spread (IQR) tells how trustworthy it is; polarity from the peak sign."""
     def chans(layer):
         return [(f"{i['file']}[{i.get('ch', 0)}]", read_audio(os.path.join(src_dir, i["file"]), start, dur)[:, i.get("ch", 0)])
                 for i in layer["inputs"]]
@@ -346,10 +352,11 @@ def alignment(preset, src_dir, start, dur, win=10):
                 for s in range(0, n - win * SR + 1, win * SR):
                     lag, pk = gcc_phat(r[s:s + win * SR], c[s:s + win * SR]); lags.append(lag); peaks.append(pk)
                 if lags:
-                    q1, q3 = np.percentile(lags, [25, 75])
+                    q1, q3 = np.percentile(lags, [25, 75]); neg = float(np.mean(np.array(peaks) < 0))
                     rows.append(dict(ref=f"{ref_layer['name']}: {rn}", layer=f"{layer['name']}: {cn}",
                                      lag_ms=1000 * float(np.median(lags)) / SR, spread_ms=1000 * float(q3 - q1) / SR,
-                                     confidence=float(np.median(peaks)), windows=len(lags)))
+                                     confidence=float(np.median(np.abs(peaks))), polarity=-1 if neg > 0.5 else 1,
+                                     inverted_windows=neg, windows=len(lags)))
     return rows
 
 def analyse(name, preset, src_dir, start, dur):
@@ -673,16 +680,16 @@ def daw_recipe(preset):
         for fn, ins in byfile.items():
             chs = {i.get("ch", 0): i for i in ins}
             if set(chs) == {0, 1} and chs[0].get("pan", 0) == -1 and chs[1].get("pan", 0) == 1 \
-                    and chs[0].get("gain_db", 0) == chs[1].get("gain_db", 0):
-                tracks.append(dict(name=f"{L['name']}: {fn}", file=fn, channels="stereo", fader_db=chs[0].get("gain_db", 0.0),
+                    and chs[0].get("gain_db", 0) == chs[1].get("gain_db", 0) and bool(chs[0].get("invert")) == bool(chs[1].get("invert")):
+                tracks.append(dict(name=f"{L['name']}: {fn}", file=fn, channels="stereo" + (" Ø INVERTED" if chs[0].get("invert") else ""), fader_db=chs[0].get("gain_db", 0.0),
                                    pan="C (stereo, L 100% / R 100%)", bus=L["name"]))
             else:
                 for i in ins:
                     tracks.append(dict(name=f"{L['name']}: {fn} ch{i.get('ch', 0) + 1}", file=fn,
-                                       channels=f"mono (channel {i.get('ch', 0) + 1})", fader_db=i.get("gain_db", 0.0),
+                                       channels=f"mono (channel {i.get('ch', 0) + 1})" + (" Ø INVERTED" if i.get("invert") else ""), fader_db=i.get("gain_db", 0.0),
                                        pan=pan_text(i.get("pan", 0.0)), bus=L["name"]))
         w = L.get("width", 1.0)
-        buses.append(dict(name=L["name"], muted=False, delay_ms=L.get("delay_ms", 0.0),
+        buses.append(dict(name=L["name"], muted=False, delay_ms=L.get("delay_ms", 0.0), polarity_inverted=bool(L.get("invert")),
                           delay_samples_48k=int(round(L.get("delay_ms", 0.0) * SR / 1000)),
                           eq=[daw_eq_band(f) for f in L.get("filters", [])], fader_db=lg, width=w,
                           side_gain_db=None if w == 1 else (round(20 * math.log10(w), 1) if w > 0 else float("-inf"))))
@@ -702,6 +709,7 @@ def daw_text(name, r):
         if b.get("muted"):
             out.append(f"   [{b['name']}] MUTED"); continue
         out.append(f"   [{b['name']}]  fader {b['fader_db']:+.2f} dB   delay {b['delay_ms']:g} ms ({b['delay_samples_48k']} samples @48k)"
+                   + ("   POLARITY Ø INVERTED" if b.get("polarity_inverted") else "")
                    + ("" if b["width"] == 1 else f"   width {b['width'] * 100:.0f}% (M/S: side {b['side_gain_db']:+.1f} dB)"))
         for k, e in enumerate(b["eq"]):
             g = "" if e["gain_db"] is None else f"{e['gain_db']:+.1f} dB"
@@ -730,33 +738,46 @@ def layer_alignment(align_rows, preset, start=None, dur=None, src_dir=None):
     for L in preset["layers"][1:]:
         rows = [a for a in (align_rows or []) if a["layer"].split(":")[0] == L["name"]]
         good = [a for a in rows if a["spread_ms"] < 2.0]
-        key = f"{src_dir}|{ref}|{L['name']}"
+        key = f"v2|{src_dir}|{ref}|{L['name']}"
         if good:
             lag = float(np.median([a["lag_ms"] for a in good])); iqr = float(np.median([a["spread_ms"] for a in good]))
-            out[L["name"]] = dict(ref=ref, lag_ms=lag, iqr_ms=iqr, trusted=True, source="this excerpt", pairs=f"{len(good)}/{len(rows)}")
-            store[key] = dict(lag_ms=lag, iqr_ms=iqr, start=start, dur=dur); changed = True
+            pol = -1 if np.mean([a.get("polarity", 1) for a in good]) < 0 else 1
+            out[L["name"]] = dict(ref=ref, lag_ms=lag, iqr_ms=iqr, polarity=pol, trusted=True, source="this excerpt", pairs=f"{len(good)}/{len(rows)}")
+            store[key] = dict(lag_ms=lag, iqr_ms=iqr, polarity=pol, start=start, dur=dur); changed = True
         elif key in store:
             s = store[key]
-            out[L["name"]] = dict(ref=ref, lag_ms=s["lag_ms"], iqr_ms=s["iqr_ms"], trusted=True,
+            out[L["name"]] = dict(ref=ref, lag_ms=s["lag_ms"], iqr_ms=s["iqr_ms"], polarity=s.get("polarity", 1), trusted=True,
                                   source=f"stored (excerpt {s.get('start')} +{s.get('dur')} s); unreliable here", pairs=f"0/{len(rows)}")
         else:
             iqr = float(np.median([a["spread_ms"] for a in rows])) if rows else None
             out[L["name"]] = dict(ref=ref, lag_ms=float(np.median([a["lag_ms"] for a in rows])) if rows else None, iqr_ms=iqr,
-                                  trusted=False, source="unreliable on this excerpt; analyse a sparse passage once", pairs=f"0/{len(rows)}")
+                                  polarity=None, trusted=False, source="unreliable on this excerpt; analyse a sparse passage once", pairs=f"0/{len(rows)}")
     if changed:
         os.makedirs(MIXLAB_HOME, exist_ok=True); json.dump(store, open(alignment_store_path(), "w"), indent=1)
     return out
 
+def layer_sign(layer):
+    """Net polarity a layer applies (layer invert × inputs inverted by majority)."""
+    s = -1 if layer.get("invert") else 1
+    ins = layer.get("inputs", [])
+    if ins and sum(1 for i in ins if i.get("invert")) * 2 > len(ins):
+        s = -s
+    return s
+
 def preset_alignment(preset, la):
-    """Residual misalignment after the preset's delays: residual = raw lag − (delay_ref − delay_layer)."""
+    """Residual misalignment after the preset's delays: residual = raw lag − (delay_ref − delay_layer).
+    polarity_ok: the raw relative polarity times the polarity flips the preset applies is positive."""
     layers = {L["name"]: L for L in preset["layers"]}; rows = []
     for name, a in la.items():
         if name not in layers or a["lag_ms"] is None:
             continue
         d_ref = layers[a["ref"]].get("delay_ms", 0.0); d_l = layers[name].get("delay_ms", 0.0)
         res = a["lag_ms"] - (d_ref - d_l)
+        pol = a.get("polarity")
+        eff = None if pol is None else pol * layer_sign(layers[name]) * layer_sign(layers[a["ref"]])
         rows.append(dict(layer=name, ref=a["ref"], raw_lag_ms=a["lag_ms"], applied_ms=d_ref - d_l, residual_ms=res,
                          first_notch_hz=(1000 / (2 * abs(res)) if abs(res) > 0.02 else None), trusted=a["trusted"],
+                         raw_polarity=pol, polarity_ok=None if eff is None else eff > 0,
                          muted=bool(layers[name].get("mute") or layers[a["ref"]].get("mute"))))
     return rows
 

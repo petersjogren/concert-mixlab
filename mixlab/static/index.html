@@ -162,8 +162,9 @@ function renderEditor(){
   ed.appendChild(mc);updateLimWarn();
   p.layers.forEach(L=>{
     const c=document.createElement('div');c.className='card';
-    c.innerHTML=`<h3><span>Layer: ${L.name} · <span style="color:${colorOf(S.edit.name)}">${S.edit.name}</span></span><label><input type="checkbox" ${L.mute?'checked':''}> mute</label></h3>`;
-    c.querySelector('h3 input').onchange=e=>{L.mute=e.target.checked;changed()};
+    c.innerHTML=`<h3><span>Layer: ${L.name} · <span style="color:${colorOf(S.edit.name)}">${S.edit.name}</span></span><span><label title="Invert polarity (Ø) of the whole layer"><input type="checkbox" class="inv" ${L.invert?'checked':''}> Ø invert</label> <label><input type="checkbox" class="mute" ${L.mute?'checked':''}> mute</label></span></h3>`;
+    c.querySelector('h3 input.mute').onchange=e=>{L.mute=e.target.checked;changed()};
+    c.querySelector('h3 input.inv').onchange=e=>{if(e.target.checked)L.invert=true;else delete L.invert;changed()};
     ctl(c,'gain dB',L.gain_db??0,{min:-30,max:18,step:0.1},v=>L.gain_db=v);
     ctl(c,'width',L.width??1,{min:0,max:2,step:0.01},v=>L.width=v);
     ctl(c,'delay ms',L.delay_ms??0,{min:0,max:40,step:0.1},v=>L.delay_ms=v);
@@ -230,11 +231,13 @@ function draw(d){
   const alignCell=p=>{const a=(p.alignment||[]);if(!a.length)return'<span class="mut">–</span>';return a.map(r=>{
       if(r.muted)return`<span class="mut">${r.layer}: muted</span>`;const res=r.residual_ms,ab=Math.abs(res);
       const cl=!r.trusted?'':ab<0.1?'#2ed573':ab<0.5?'#ffd32a':'#ff6b81';
-      return`<span style="color:${cl}">${r.layer} ${fx(res,6,2)} ms</span>${r.first_notch_hz&&ab<5?` <span class="mut">(1st notch ${r.first_notch_hz>=1000?(r.first_notch_hz/1000).toFixed(1)+'k':r.first_notch_hz.toFixed(0)} Hz)</span>`:''}${r.trusted?'':' <span class="mut">?</span>'}`}).join('<br>')};
+      return`<span style="color:${cl}">${r.layer} ${fx(res,6,2)} ms</span>${r.first_notch_hz&&ab<5?` <span class="mut">(1st notch ${r.first_notch_hz>=1000?(r.first_notch_hz/1000).toFixed(1)+'k':r.first_notch_hz.toFixed(0)} Hz)</span>`:''}${r.trusted?'':' <span class="mut">?</span>'}`+
+        (r.polarity_ok===false?` <span style="color:#ff6b81" title="The measured relative polarity is inverted and this preset does not compensate: low frequencies partly cancel">Ø polarity wrong</span>`:r.polarity_ok?` <span class="mut">Ø ok</span>`:'')}).join('<br>')};
   $('summary').innerHTML=`<table><tr><th class="l">preset</th><th>LUFS</th><th>peak</th><th>crest</th><th>centroid Hz</th><th>L/R corr</th><th>S/M dB</th><th>L−R dB</th><th>max GR</th><th>% GR&gt;1dB</th><th class="l">mic alignment after delays</th><th class="l">energy share</th></tr>`+
     P.map(p=>{const m=p.metrics,clip=m.clipped_pct>0;return`<tr><td class="l">${sw(p.name)}${p.name}</td><td>${m.lufs.toFixed(1)}</td><td class="${clip?'bad':''}" title="${clip?m.clipped_pct.toFixed(3)+'% of samples clip':''}">${m.peak_dbfs.toFixed(1)}${clip?' CLIP':''}</td><td>${m.crest_db.toFixed(1)}</td><td>${m.centroid_hz.toFixed(0)}</td><td>${m.corr.toFixed(2)}</td><td>${m.side_mid_db.toFixed(1)}</td><td>${m.balance_db.toFixed(1)}</td><td>${p.daw.master.limiter?m.gr_max_db.toFixed(1):'<span class="mut">off</span>'}</td><td>${p.daw.master.limiter?m.gr_time_pct_over_1db.toFixed(1):'<span class="mut">off</span>'}</td><td class="l" style="white-space:pre">${alignCell(p)}</td><td class="l">${Object.entries(p.contrib_total).map(([k,v])=>`${k} ${(v*100).toFixed(0)}%`).join(' / ')}</td></tr>`}).join('')+'</table>'+
     Object.entries(d.layer_alignment||{}).map(([ln,a])=>a.lag_ms==null?'':`<div class="note"><b>Measured:</b> ${ln} arrives <b>${fx(a.lag_ms,6,2)} ms</b> after ${a.ref} (raw, IQR ${a.iqr_ms?.toFixed(2)} ms, ${a.pairs} mic pairs trusted, ${a.source}). `+
-      (a.trusted?`To line them up, delay <b>${a.lag_ms>0?a.ref:ln}</b> by <b>${Math.abs(a.lag_ms).toFixed(2)} ms</b> (${Math.round(Math.abs(a.lag_ms)*48)} samples). Residual = raw lag − applied delay; under 0.1 ms is green.`:'Not trustworthy here: open a sparse/a-cappella excerpt (e.g. Brahms) once and it will be remembered.')+'</div>').join('');
+      (a.trusted?`To line them up, delay <b>${a.lag_ms>0?a.ref:ln}</b> by <b>${Math.abs(a.lag_ms).toFixed(2)} ms</b> (${Math.round(Math.abs(a.lag_ms)*48)} samples)`+
+        (a.polarity===-1?`, and <b style="color:#ff6b81">invert the polarity (Ø) of ${ln}</b>: its strongest correlation peak is negative`:'')+`. Residual = raw lag − applied delay; under 0.1 ms is green.`:'Not trustworthy here: open a sparse/a-cappella excerpt (e.g. Brahms) once and it will be remembered.')+'</div>').join('');
   updateLimWarn();
   const bands=Object.keys(P[0].tilt);const gd=Object.fromEntries(d.guide.map(g=>[`${g[0]}-${g[1]}`,g[2]]));
   $('tonal').innerHTML=`<table><tr><th class="l">Hz</th>${bands.map(b=>`<th>${b}</th>`).join('')}</tr>`+P.map(p=>`<tr><td class="l">${sw(p.name)}${p.name}</td>${bands.map(b=>`<td class="${cls(b,p.tilt[b])}">${p.tilt[b].toFixed(1)}</td>`).join('')}</tr>`).join('')+
@@ -412,7 +415,7 @@ function renderDaw(n){
     d.tracks.map(t=>`<tr><td class="l">${t.name}</td><td class="l">${t.file}</td><td class="l">${t.channels}</td><td><b>${f1(t.fader_db)}</b></td><td class="l"><b>${t.pan}</b></td><td class="l">${t.bus}</td></tr>`).join('')+'</table>';
   h+=`<h4>2 · Buses <span class="mut">(delay, EQ, width and fader are linear, so their order on the bus doesn't matter)</span></h4>`;
   d.buses.forEach(b=>{if(b.muted){h+=`<div class="card"><b>${b.name}</b> <span class="pill">MUTED</span></div>`;return}
-    h+=`<div class="card"><b>${b.name}</b> <span class="pill">fader ${f1(b.fader_db)} dB</span><span class="pill">delay ${b.delay_ms} ms = ${b.delay_samples_48k} smp @48k</span>`+
+    h+=`<div class="card"><b>${b.name}</b> <span class="pill">fader ${f1(b.fader_db)} dB</span><span class="pill">delay ${b.delay_ms} ms = ${b.delay_samples_48k} smp @48k</span>`+(b.polarity_inverted?'<span class="pill" style="background:#6e2626">Ø polarity INVERTED</span>':'')+
       (b.width!==1?`<span class="pill">width ${(b.width*100).toFixed(0)}% · M/S side ${b.side_gain_db==null?'−∞':f1(b.side_gain_db)} dB</span>`:'<span class="pill">width 100%</span>')+
       `<table style="margin-top:6px"><tr><th>#</th><th class="l">type</th><th>freq Hz</th><th>gain dB</th><th>Q</th><th class="l">notes</th></tr>`+
       (b.eq.length?b.eq.map((e,k)=>`<tr style="${e.bypass?'opacity:.45':''}"><td>${k+1}</td><td class="l">${e.kind}</td><td><b>${e.freq_hz}</b></td><td><b>${e.gain_db==null?'':f1(e.gain_db)}</b></td><td><b>${e.q}</b></td><td class="l mut">${

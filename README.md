@@ -158,8 +158,8 @@ layer:  …                                                                     
 | any filter | `"bypass": true` |
 
 Other fields:
-- **Layer:** `mute`, `width` (1 = unchanged, 0 = mono, >1 = wider).
-- **Input:** `pan` (−1…1, constant power) and `gain_db`.
+- **Layer:** `invert` (polarity Ø), `mute`, `width` (1 = unchanged, 0 = mono, >1 = wider).
+- **Input:** `pan` (−1…1, constant power), `gain_db` and `invert`.
 - **Master:** `limiter_ceiling` is linear; `null` turns the limiter off.
 
 ## Reading the analysis
@@ -174,7 +174,7 @@ Other fields:
 | Energy share | Each layer's share of the master | the ambient layer usually sits at 20–35% |
 | Summation gain | Actual sum vs energy sum, per octave | +3 coherent, 0 uncorrelated, **negative = cancellation**, so check the delay |
 | Limiter GR | Gain reduction | above about 5% of the time over 1 dB = squashed |
-| Mic alignment (summary) | Residual timing between layers after each preset's delays, plus the first comb-filter notch | under 0.1 ms green; the measured raw lag and the delay that fixes it are shown below the table |
+| Mic alignment (summary) | Residual timing between layers after each preset's delays, plus the first comb-filter notch and a **polarity check** (signed GCC-PHAT; "Ø polarity wrong" = low frequencies cancel) | under 0.1 ms green; the measured raw lag and the delay that fixes it are shown below the table |
 | Clip | % of samples ≥ 0 dBFS (limiter off) | must be 0; the editor warns and suggests how much to lower the master |
 | Alignment | GCC-PHAT lag between inputs | trust only IQR < 2 ms; measure on sparse or a-cappella passages |
 

@@ -40,6 +40,7 @@ M report --presets current,try1 [--out DIR] [--render]          # static HTML re
 M render --preset try1 --start 39:08 --dur 180 --fade 3 --out x.wav
 M ffmpeg --preset try1 --start 0 --dur 0 --out full.wav         # whole-recording ffmpeg command
 M verify --preset try1 --dur 30                                 # python vs ffmpeg null test
+M set --preset try1 layers.camera.invert=true                    # polarity flip (layer or input)
 M daw --preset try1 [--json]                                    # plain DAW recipe: track fader/pan, bus delay/EQ(Q)/width/fader, limiter
 ```
 `--start/--dur` default to the GUI's current excerpt. Times accept `mm:ss`. Edited presets are saved standalone (their `extends` is dropped).
@@ -57,6 +58,7 @@ M daw --preset try1 [--json]                                    # plain DAW reci
 - `layer_sum_gain_db_per_octave` < 0 means the layers cancel; check the delay.
 - `gr_time_pct_over_1db` above about 5 means the limiter is squashing.
 - `layer_alignment` (raw lag per layer, falls back to the last trustworthy measurement in `~/.concert-mixlab/alignment.json`) and per-preset `alignment_after_delays.residual_ms` (raw lag − applied delay; aim for |residual| < 0.1 ms; `first_notch_hz` = comb notch). This recording: camera +11.33 ms after close, so the close delay should be ≈11.33 ms (current 11 ms leaves +0.33 ms → notch ≈1.5 kHz).
+- `layer_alignment.polarity` = −1 / `alignment_after_delays.polarity_ok` = false → the layers are polarity-inverted relative to each other: set `layers.<layer>.invert=true` (this recording: camera is Ø-inverted vs close in ~90% of windows; fixing it turns −0.3…−0.8 dB LF cancellation into +0.3…+0.6 dB summation, ≈ +1 dB bass 31–250 Hz). Inputs also accept `invert`.
 - `clipped_pct` > 0 with the limiter off = audible clipping; lower master gain.
 - Alignment: trust only rows with IQR < 2 ms. Measure on sparse or a-cappella excerpts; dense tutti gives garbage. Delay the closer layer by the measured lag.
 
