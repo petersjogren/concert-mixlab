@@ -390,7 +390,7 @@ def fit_imager(side_sos, sr: float = 48000.0):
     for xr in range(0, 128):
         a, b, g = RD.imager_lpf_coeffs(xr, sr)
         lp = float(g) / (1 - float(a) * z + float(b) * z * z)
-        for hr in range(-12, 13):
+        for hr in (range(-12, 13) if os.environ.get("MIXLAB_IMAGER_HIGH0") is None else (0,)):
             hgm, hgs = RD.imager_mid_side_gains(hr)
             for wr in range(-64, 64):
                 gm, gs = RD.imager_mid_side_gains(wr)
