@@ -36,11 +36,12 @@ def phash(preset, start, dur):
     return hashlib.sha1(json.dumps([preset, start, dur], sort_keys=True).encode()).hexdigest()[:16]
 
 def wav16(y):
-    b = io.BytesIO()
-    with wave.open(b, "wb") as w:
-        w.setnchannels(2); w.setsampwidth(2); w.setframerate(ml.SR)
-        w.writeframes((np.clip(y, -1, 1) * 32767).astype("<i2").tobytes())
-    return b.getvalue()
+    """32-bit float WAV, so overs above 0 dBFS reach the browser unclipped and the meters can show them."""
+    data = np.ascontiguousarray(y, dtype="<f4").tobytes()
+    import struct
+    hdr = b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE" + b"fmt " + struct.pack("<IHHIIHH", 16, 3, 2, ml.SR, ml.SR * 8, 8, 32) \
+        + b"data" + struct.pack("<I", len(data))
+    return hdr + data
 
 def clean(o):
     if isinstance(o, dict): return {k: clean(v) for k, v in o.items()}

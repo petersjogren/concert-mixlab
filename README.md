@@ -100,6 +100,8 @@ Claude works on a **clone** of your preset, never on your originals. It uses `mi
 
 ![Analysis graphs](docs/gui-graphs.png)
 
+- **Limiter:** on/off. When it's off, ceiling (dBFS), attack and release are greyed out, the meters show *LIMITER OFF*, and a warning appears if the master clips. Overs reach the meters unclipped (float audio), and the clip LED lights at 0 dBFS.
+- **Busy indicator:** while a change is being analysed, the numbers dim and "updating" shows. Only the edited preset is re-analysed, which takes about 0.5–3 s.
 - **Header:** excerpt picker (saved bookmarks or any start/duration), Analyse, and *auto* (re-analyse after every edit).
 - **Transport:** play/stop (space), seek, one button per compared preset (keys 1–9), loudness-match toggle. The time display shows both the excerpt time and the concert time.
 - **Compare:** tick the presets to analyse and audition side by side.
@@ -172,6 +174,8 @@ Other fields:
 | Energy share | Each layer's share of the master | the ambient layer usually sits at 20–35% |
 | Summation gain | Actual sum vs energy sum, per octave | +3 coherent, 0 uncorrelated, **negative = cancellation**, so check the delay |
 | Limiter GR | Gain reduction | above about 5% of the time over 1 dB = squashed |
+| Mic alignment (summary) | Residual timing between layers after each preset's delays, plus the first comb-filter notch | under 0.1 ms green; the measured raw lag and the delay that fixes it are shown below the table |
+| Clip | % of samples ≥ 0 dBFS (limiter off) | must be 0; the editor warns and suggests how much to lower the master |
 | Alignment | GCC-PHAT lag between inputs | trust only IQR < 2 ms; measure on sparse or a-cappella passages |
 
 The tonal "guide" is a rough rule of thumb for an open concert-hall balance, **not a standard**. Your ears decide.

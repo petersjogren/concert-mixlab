@@ -378,12 +378,13 @@ def analyse(name, preset, src_dir, start, dur):
                  pre=(20 * np.log10(np.max(np.abs(pre[:nb * blk]).reshape(nb, blk, 2), axis=(1, 2)) + 1e-9)).round(1).tolist())
     return dict(
         name=name, preset=preset, f=f, P=Pm, stereo=stereo_by_band(f, Pll, Prr, Plr), contrib=band_rows, meter=meter,
-        contrib_total={k: v / tot for k, v in full.items()}, st=st, gr=gr, y=y,
+        contrib_total={k: v / tot for k, v in full.items()}, st=st, gr=gr.astype(np.float32), y=y.astype(np.float32),
         metrics=dict(lufs=lufs, peak_dbfs=20 * math.log10(np.max(np.abs(y)) + 1e-12),
                      crest_db=20 * math.log10(np.max(np.abs(y)) / (np.sqrt(np.mean(y ** 2)) + 1e-12)),
                      corr=corr, side_mid_db=10 * math.log10(max(np.sum(Pll + Prr - 2 * Plr), 1e-30) / np.sum(Pll + Prr + 2 * Plr)),
                      balance_db=10 * math.log10(np.sum(Pll) / np.sum(Prr)),
                      gr_max_db=float(-gr.min()), gr_time_pct_over_1db=float(100 * np.mean(gr < -1)),
+                     clipped_pct=float(100 * np.mean(np.max(np.abs(y), axis=1) >= 1.0)),
                      centroid_hz=float(np.sum(f * Pm * band_mask(f, 40, 20000)) / np.sum(Pm * band_mask(f, 40, 20000)))),
         tilt={f"{lo}-{hi}": rel_level(f, Pm, lo, hi) for lo, hi in
               [(60, 120), (120, 250), (250, 500), (2000, 4000), (4000, 8000), (8000, 12000), (12000, 16000), (16000, 20000)]})
@@ -715,11 +716,74 @@ def daw_text(name, r):
         out.append("   limiter: off")
     return "\n".join(out)
 
+def alignment_store_path():
+    return os.path.join(MIXLAB_HOME, "alignment.json")
+
+def layer_alignment(align_rows, preset, start=None, dur=None, src_dir=None):
+    """Per non-reference layer: raw lag (ms, + = layer arrives later than the reference layer) from trustworthy
+    GCC-PHAT rows (IQR < 2 ms). Falls back to the last trustworthy measurement stored in alignment.json."""
+    try:
+        store = json.load(open(alignment_store_path()))
+    except (OSError, json.JSONDecodeError):
+        store = {}
+    ref = preset["layers"][0]["name"]; out = {}; changed = False
+    for L in preset["layers"][1:]:
+        rows = [a for a in (align_rows or []) if a["layer"].split(":")[0] == L["name"]]
+        good = [a for a in rows if a["spread_ms"] < 2.0]
+        key = f"{src_dir}|{ref}|{L['name']}"
+        if good:
+            lag = float(np.median([a["lag_ms"] for a in good])); iqr = float(np.median([a["spread_ms"] for a in good]))
+            out[L["name"]] = dict(ref=ref, lag_ms=lag, iqr_ms=iqr, trusted=True, source="this excerpt", pairs=f"{len(good)}/{len(rows)}")
+            store[key] = dict(lag_ms=lag, iqr_ms=iqr, start=start, dur=dur); changed = True
+        elif key in store:
+            s = store[key]
+            out[L["name"]] = dict(ref=ref, lag_ms=s["lag_ms"], iqr_ms=s["iqr_ms"], trusted=True,
+                                  source=f"stored (excerpt {s.get('start')} +{s.get('dur')} s); unreliable here", pairs=f"0/{len(rows)}")
+        else:
+            iqr = float(np.median([a["spread_ms"] for a in rows])) if rows else None
+            out[L["name"]] = dict(ref=ref, lag_ms=float(np.median([a["lag_ms"] for a in rows])) if rows else None, iqr_ms=iqr,
+                                  trusted=False, source="unreliable on this excerpt; analyse a sparse passage once", pairs=f"0/{len(rows)}")
+    if changed:
+        os.makedirs(MIXLAB_HOME, exist_ok=True); json.dump(store, open(alignment_store_path(), "w"), indent=1)
+    return out
+
+def preset_alignment(preset, la):
+    """Residual misalignment after the preset's delays: residual = raw lag − (delay_ref − delay_layer)."""
+    layers = {L["name"]: L for L in preset["layers"]}; rows = []
+    for name, a in la.items():
+        if name not in layers or a["lag_ms"] is None:
+            continue
+        d_ref = layers[a["ref"]].get("delay_ms", 0.0); d_l = layers[name].get("delay_ms", 0.0)
+        res = a["lag_ms"] - (d_ref - d_l)
+        rows.append(dict(layer=name, ref=a["ref"], raw_lag_ms=a["lag_ms"], applied_ms=d_ref - d_l, residual_ms=res,
+                         first_notch_hz=(1000 / (2 * abs(res)) if abs(res) > 0.02 else None), trusted=a["trusted"],
+                         muted=bool(layers[name].get("mute") or layers[a["ref"]].get("mute"))))
+    return rows
+
+_ana_cache, _aux_cache = {}, {}
 def analyse_many(cfg, names, start, dur, with_raw=True):
-    res = [analyse(n, cfg["resolved"][n], cfg["source_dir"], start, dur) for n in names]
-    raw = raw_spectra(cfg["resolved"][names[0]], cfg["source_dir"], start, dur) if with_raw else None
-    align = alignment(cfg["resolved"][names[0]], cfg["source_dir"], start, dur) if with_raw else None
-    return res, analysis_json(res, raw, align)
+    """Analyse presets; per-preset results and per-excerpt aux data (raw spectra, alignment) are cached so an edit
+    to one preset only re-analyses that preset."""
+    src = cfg["source_dir"]; res = []
+    for n in names:
+        key = (json.dumps(cfg["resolved"][n], sort_keys=True), n, src, start, dur)
+        if key not in _ana_cache:
+            if len(_ana_cache) >= 6:
+                _ana_cache.pop(next(iter(_ana_cache)))
+            _ana_cache[key] = analyse(n, cfg["resolved"][n], src, start, dur)
+        res.append(_ana_cache[key])
+    p0 = cfg["resolved"][names[0]]
+    akey = (json.dumps([L["inputs"] for L in p0["layers"]], sort_keys=True), json.dumps([L["name"] for L in p0["layers"]]), src, start, dur)
+    if with_raw and akey not in _aux_cache:
+        _aux_cache.clear()
+        _aux_cache[akey] = (raw_spectra(p0, src, start, dur), alignment(p0, src, start, dur))
+    raw, align = _aux_cache[akey] if with_raw else (None, None)
+    js = analysis_json(res, raw, align)
+    la = layer_alignment(align, cfg["resolved"][names[0]], start, dur, cfg["source_dir"])
+    js["layer_alignment"] = la
+    for p, r in zip(js["presets"], res):
+        p["alignment"] = preset_alignment(r["preset"], la)
+    return res, js
 
 # --- config editing (flattening: an edited preset no longer `extends` anything)
 def save_preset(cfg_path, name, preset):
@@ -884,9 +948,10 @@ def cmd_metrics(args):
     cfg = load_config(args.config); names = args.presets.split(",") if args.presets else list(cfg["presets"])
     res, js = analyse_many(cfg, names, parse_time(args.start), args.dur, with_raw=args.align)
     out = dict(excerpt=dict(start=args.start, dur=args.dur), guide={f"{lo}-{hi}": g for lo, hi, g in js["guide"]},
-               octaves=OCT, alignment=js["align"], presets={})
+               octaves=OCT, alignment=js["align"], layer_alignment=js.get("layer_alignment", {}), presets={})
     for p in js["presets"]:
         out["presets"][p["name"]] = dict(
+            alignment_after_delays=[{k: (round(v, 2) if isinstance(v, float) else v) for k, v in a.items()} for a in p.get("alignment", [])],
             metrics={k: round(v, 3) for k, v in p["metrics"].items()},
             tilt_rel_0p5_2k={k: round(v, 1) for k, v in p["tilt"].items()},
             energy_share={k: round(v, 3) for k, v in p["contrib_total"].items()},

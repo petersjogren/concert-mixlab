@@ -56,6 +56,8 @@ M daw --preset try1 [--json]                                    # plain DAW reci
 - `balance_db` (L−R) ≠ 0 means the image leans. Fix it with per-input `gain_db`.
 - `layer_sum_gain_db_per_octave` < 0 means the layers cancel; check the delay.
 - `gr_time_pct_over_1db` above about 5 means the limiter is squashing.
+- `layer_alignment` (raw lag per layer, falls back to the last trustworthy measurement in `~/.concert-mixlab/alignment.json`) and per-preset `alignment_after_delays.residual_ms` (raw lag − applied delay; aim for |residual| < 0.1 ms; `first_notch_hz` = comb notch). This recording: camera +11.33 ms after close, so the close delay should be ≈11.33 ms (current 11 ms leaves +0.33 ms → notch ≈1.5 kHz).
+- `clipped_pct` > 0 with the limiter off = audible clipping; lower master gain.
 - Alignment: trust only rows with IQR < 2 ms. Measure on sparse or a-cappella excerpts; dense tutti gives garbage. Delay the closer layer by the measured lag.
 
 ## Workflow

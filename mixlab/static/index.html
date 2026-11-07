@@ -29,6 +29,8 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;pad
 .spechd{display:flex;justify-content:space-between;align-items:center;gap:8px}.spechd label{color:var(--mut);font-size:11px}
 .ro b{color:var(--acc)}#daw table td,#daw table th{font-size:12px}#daw h4{margin:10px 0 4px;font-size:12px;color:var(--acc)}
 #daw .big{font-size:15px;font-weight:600}.pill{display:inline-block;padding:1px 7px;border-radius:9px;background:#2c313c;margin-left:6px;font-size:11px}
+body.analysing #summary,body.analysing #tonal,body.analysing #daw_body{opacity:.4;transition:opacity .15s}
+#busy{display:none;color:#ffd32a;font-weight:600}body.analysing #busy{display:inline}
 </style></head><body>
 <header>
   <h1>🎻 concert-mixlab</h1>
@@ -36,6 +38,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;pad
   start <input id="start" size="7"> dur <input id="dur" size="5"> s
   <button id="analyze">Analyse</button>
   <label><input type="checkbox" id="auto" checked> auto</label>
+  <span id="busy">⟳ updating — numbers and audio below are from the previous settings</span>
   <span id="status">loading…</span>
 </header>
 <div id="transport">
@@ -141,12 +144,20 @@ const FDEF={peak:{f:1000,oct:1,g:0},highshelf:{f:6000,g:0,slope:0.7},lowshelf:{f
 function renderEditor(){
   const ed=$('editor');ed.innerHTML='';if(!S.edit)return;const p=S.edit.p;$('desc').value=p.description||'';
   const m=p.master=p.master||{};const mc=document.createElement('div');mc.className='card';mc.innerHTML='<h3>Master</h3>';
-  ctl(mc,'gain dB',m.gain_db??0,{min:-12,max:24,step:0.1},v=>m.gain_db=v);
+  ctl(mc,'gain dB',m.gain_db??0,{min:-24,max:24,step:0.1},v=>m.gain_db=v);
   const lim=document.createElement('div');lim.className='row';lim.innerHTML=`<label>limiter</label><label><input type="checkbox" ${m.limiter_ceiling?'checked':''}> on</label><span></span>`;
-  lim.querySelector('input').onchange=e=>{m.limiter_ceiling=e.target.checked?(m._ceil||0.9):null;changed()};mc.appendChild(lim);
-  ctl(mc,'ceiling',m.limiter_ceiling||0.9,{min:0.3,max:1,step:0.01},v=>{m._ceil=v;if(m.limiter_ceiling)m.limiter_ceiling=v});
-  ctl(mc,'release ms',m.release_ms??50,{min:5,max:500,step:1},v=>m.release_ms=v);
-  ed.appendChild(mc);
+  mc.appendChild(lim);
+  const lc=document.createElement('div');mc.appendChild(lc);
+  const cdb=m.limiter_ceiling?20*Math.log10(m.limiter_ceiling):(m._ceil_db??-1);
+  ctl(lc,'ceiling dBFS',+cdb.toFixed(2),{min:-12,max:0,step:0.1},v=>{m._ceil_db=v;if(m.limiter_ceiling)m.limiter_ceiling=+Math.pow(10,v/20).toFixed(5)});
+  ctl(lc,'attack ms',m.attack_ms??5,{min:0.5,max:20,step:0.5},v=>m.attack_ms=v);
+  ctl(lc,'release ms',m.release_ms??50,{min:5,max:1000,step:1,log:true},v=>m.release_ms=v);
+  const setLimUI=on=>{lc.style.opacity=on?1:0.35;lc.querySelectorAll('input').forEach(i=>i.disabled=!on)};
+  setLimUI(!!m.limiter_ceiling);
+  lim.querySelector('input').onchange=e=>{const on=e.target.checked;
+    m.limiter_ceiling=on?+Math.pow(10,(m._ceil_db??cdb)/20).toFixed(5):null;setLimUI(on);changed()};
+  const warn=document.createElement('div');warn.className='note';warn.id='lim_warn';mc.appendChild(warn);
+  ed.appendChild(mc);updateLimWarn();
   p.layers.forEach(L=>{
     const c=document.createElement('div');c.className='card';
     c.innerHTML=`<h3><span>Layer: ${L.name}</span><label><input type="checkbox" ${L.mute?'checked':''}> mute</label></h3>`;
@@ -176,8 +187,13 @@ function renderEditor(){
     ed.appendChild(c);
   });
 }
-function cleanPreset(p){const q=JSON.parse(JSON.stringify(p));if(q.master)delete q.master._ceil;return q}
-function changed(){S.dirty=true;clearTimeout(S.timer);S.timer=setTimeout(save,400)}
+function cleanPreset(p){const q=JSON.parse(JSON.stringify(p));if(q.master){delete q.master._ceil;delete q.master._ceil_db}return q}
+function updateLimWarn(){const w=$('lim_warn');if(!w||!S.edit)return;const p=S.data?.presets.find(x=>x.name==S.edit.name);
+  if(!p){w.textContent='';return}const m=p.metrics;
+  if(!S.edit.p.master.limiter_ceiling&&m.peak_dbfs>-0.1){w.innerHTML=`<span style="color:#ff6b81">⚠ limiter off and the master peaks at ${m.peak_dbfs.toFixed(1)} dBFS: ${m.clipped_pct.toFixed(2)}% of samples clip in playback/export. Lower master gain by about ${(m.peak_dbfs+1).toFixed(1)} dB, or turn the limiter on.</span>`}
+  else if(!S.edit.p.master.limiter_ceiling){w.textContent=`limiter off · master peak ${m.peak_dbfs.toFixed(1)} dBFS (headroom ${(-m.peak_dbfs).toFixed(1)} dB)`}
+  else w.textContent=`limiter on · max GR ${m.gr_max_db.toFixed(1)} dB · GR>1 dB ${m.gr_time_pct_over_1db.toFixed(1)}% of the time`}
+function changed(){S.dirty=true;document.body.classList.add('analysing');clearTimeout(S.timer);S.timer=setTimeout(save,400)}
 async function save(){
   if(!S.edit)return;S.saving++;
   try{S.ver=await api('/api/preset',{name:S.edit.name,preset:cleanPreset(S.edit.p)});S.cfg.resolved[S.edit.name]=cleanPreset(S.edit.p);S.dirty=false;
@@ -197,16 +213,23 @@ $('analyze').onclick=()=>analyze();
 // ---------------------------------------------------------------- analysis
 function scheduleAnalyze(ms=300){clearTimeout(S.anaTimer);S.anaTimer=setTimeout(analyze,ms)}
 async function analyze(){
-  if(S.busy){S.again=true;return}S.busy=true;const t0=performance.now();status('analysing '+S.compare.join(', ')+' …');
+  if(S.busy){S.again=true;return}S.busy=true;document.body.classList.add('analysing');const t0=performance.now();status('analysing '+S.compare.join(', ')+' …');
   try{const d=await api('/api/analyze',{presets:S.compare,start:$('start').value,dur:+$('dur').value});S.data=d;draw(d);
-    status(`analysed in ${((performance.now()-t0)/1000).toFixed(1)} s`);loadAudio(d)}catch(e){status('error: '+e.message)}
-  S.busy=false;if(S.again){S.again=false;analyze()}
+    status(`analysed in ${((performance.now()-t0)/1000).toFixed(1)} s`);await loadAudio(d)}catch(e){status('error: '+e.message)}
+  S.busy=false;if(S.again){S.again=false;analyze()}else if(!S.dirty&&!S.saving)document.body.classList.remove('analysing')
 }
 function cls(b,v){const g=(S.data.guide.find(x=>`${x[0]}-${x[1]}`==b)||[])[2];if(g===undefined)return'';const d=Math.abs(v-g);return d<=3?'good':d<=7?'warn':'bad'}
 function draw(d){
   const P=d.presets, sw=n=>`<span class="sw" style="background:${colorOf(n)}"></span>`;
-  $('summary').innerHTML=`<table><tr><th class="l">preset</th><th>LUFS</th><th>peak</th><th>crest</th><th>centroid Hz</th><th>L/R corr</th><th>S/M dB</th><th>L−R dB</th><th>max GR</th><th>% GR&gt;1dB</th><th class="l">energy share</th></tr>`+
-    P.map(p=>{const m=p.metrics;return`<tr><td class="l">${sw(p.name)}${p.name}</td><td>${m.lufs.toFixed(1)}</td><td>${m.peak_dbfs.toFixed(1)}</td><td>${m.crest_db.toFixed(1)}</td><td>${m.centroid_hz.toFixed(0)}</td><td>${m.corr.toFixed(2)}</td><td>${m.side_mid_db.toFixed(1)}</td><td>${m.balance_db.toFixed(1)}</td><td>${m.gr_max_db.toFixed(1)}</td><td>${m.gr_time_pct_over_1db.toFixed(1)}</td><td class="l">${Object.entries(p.contrib_total).map(([k,v])=>`${k} ${(v*100).toFixed(0)}%`).join(' / ')}</td></tr>`}).join('')+'</table>';
+  const alignCell=p=>{const a=(p.alignment||[]);if(!a.length)return'<span class="mut">–</span>';return a.map(r=>{
+      if(r.muted)return`<span class="mut">${r.layer}: muted</span>`;const res=r.residual_ms,ab=Math.abs(res);
+      const cl=!r.trusted?'':ab<0.1?'#2ed573':ab<0.5?'#ffd32a':'#ff6b81';
+      return`<span style="color:${cl}">${r.layer} ${fx(res,6,2)} ms</span>${r.first_notch_hz&&ab<5?` <span class="mut">(1st notch ${r.first_notch_hz>=1000?(r.first_notch_hz/1000).toFixed(1)+'k':r.first_notch_hz.toFixed(0)} Hz)</span>`:''}${r.trusted?'':' <span class="mut">?</span>'}`}).join('<br>')};
+  $('summary').innerHTML=`<table><tr><th class="l">preset</th><th>LUFS</th><th>peak</th><th>crest</th><th>centroid Hz</th><th>L/R corr</th><th>S/M dB</th><th>L−R dB</th><th>max GR</th><th>% GR&gt;1dB</th><th class="l">mic alignment after delays</th><th class="l">energy share</th></tr>`+
+    P.map(p=>{const m=p.metrics,clip=m.clipped_pct>0;return`<tr><td class="l">${sw(p.name)}${p.name}</td><td>${m.lufs.toFixed(1)}</td><td class="${clip?'bad':''}" title="${clip?m.clipped_pct.toFixed(3)+'% of samples clip':''}">${m.peak_dbfs.toFixed(1)}${clip?' CLIP':''}</td><td>${m.crest_db.toFixed(1)}</td><td>${m.centroid_hz.toFixed(0)}</td><td>${m.corr.toFixed(2)}</td><td>${m.side_mid_db.toFixed(1)}</td><td>${m.balance_db.toFixed(1)}</td><td>${p.daw.master.limiter?m.gr_max_db.toFixed(1):'<span class="mut">off</span>'}</td><td>${p.daw.master.limiter?m.gr_time_pct_over_1db.toFixed(1):'<span class="mut">off</span>'}</td><td class="l" style="white-space:pre">${alignCell(p)}</td><td class="l">${Object.entries(p.contrib_total).map(([k,v])=>`${k} ${(v*100).toFixed(0)}%`).join(' / ')}</td></tr>`}).join('')+'</table>'+
+    Object.entries(d.layer_alignment||{}).map(([ln,a])=>a.lag_ms==null?'':`<div class="note"><b>Measured:</b> ${ln} arrives <b>${fx(a.lag_ms,6,2)} ms</b> after ${a.ref} (raw, IQR ${a.iqr_ms?.toFixed(2)} ms, ${a.pairs} mic pairs trusted, ${a.source}). `+
+      (a.trusted?`To line them up, delay <b>${a.lag_ms>0?a.ref:ln}</b> by <b>${Math.abs(a.lag_ms).toFixed(2)} ms</b> (${Math.round(Math.abs(a.lag_ms)*48)} samples). Residual = raw lag − applied delay; under 0.1 ms is green.`:'Not trustworthy here: open a sparse/a-cappella excerpt (e.g. Brahms) once and it will be remembered.')+'</div>').join('');
+  updateLimWarn();
   const bands=Object.keys(P[0].tilt);const gd=Object.fromEntries(d.guide.map(g=>[`${g[0]}-${g[1]}`,g[2]]));
   $('tonal').innerHTML=`<table><tr><th class="l">Hz</th>${bands.map(b=>`<th>${b}</th>`).join('')}</tr>`+P.map(p=>`<tr><td class="l">${sw(p.name)}${p.name}</td>${bands.map(b=>`<td class="${cls(b,p.tilt[b])}">${p.tilt[b].toFixed(1)}</td>`).join('')}</tr>`).join('')+
     `<tr><td class="l mut">rough guide</td>${bands.map(b=>`<td class="mut">${gd[b]!==undefined?gd[b]:''}</td>`).join('')}</tr></table>`;
@@ -343,7 +366,8 @@ function drawMeters(){
   const lc=$('cv_lr').getContext('2d');lc.clearRect(0,0,70,H);const lo=-60,hi=0;
   [0,1].forEach(k=>{const x=4+k*22;lc.fillStyle='#1b1f27';lc.fillRect(x,0,18,H);
     meterBar(lc,x,18,M.rms[k],lo,hi,M.rms[k]>-6?'#ff9f43':'#2ed573');const yp=H-(Math.min(Math.max(M.pk[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle='#e6e8ee';lc.fillRect(x,yp,18,2);
-    const yh=H-(Math.min(Math.max(M.hold[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle=M.hold[k]>-1?'#ff4757':'#ffd32a';lc.fillRect(x,yh,18,1)});
+    const yh=H-(Math.min(Math.max(M.hold[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle=M.hold[k]>-1?'#ff4757':'#ffd32a';lc.fillRect(x,yh,18,1);
+    if(M.hold[k]>=-0.01){lc.fillStyle='#ff4757';lc.fillRect(x,0,18,8)}});  // clip LED (≥ 0 dBFS, held 1.5 s)
   scaleTicks(lc,48,lo,hi,[0,-6,-12,-24,-36,-48]);
   $('ro_lr').textContent=`pk ${fx(Math.max(...M.hold),6,1)}`;
   // limiter (from render, synced to playhead)
@@ -351,12 +375,14 @@ function drawMeters(){
   const ceil=am?.daw?.master?.limiter?.ceiling_dbfs;let gr=0,pre=-90,idx=0;
   if(am&&A.dur){idx=Math.floor(curPos()*am.meter.rate);gr=am.meter.gr[idx]??0;pre=am.meter.pre[idx]??-90}
   mc.fillStyle='#1b1f27';mc.fillRect(4,0,18,H);mc.fillRect(40,0,18,H);
-  meterBar(mc,4,18,pre,-30,12,pre>(ceil??0)?'#ff9f43':'#5aa9ff');
+  const limOn=!!am?.daw?.master?.limiter;
+  meterBar(mc,4,18,pre,-30,12,!limOn?'#5b6372':pre>(ceil??0)?'#ff9f43':'#5aa9ff');
   if(ceil!=null){const yc2=H-(ceil+30)/42*H;mc.fillStyle='#ff4757';mc.fillRect(0,yc2,26,2)}
-  const ygr=Math.min(-gr,24)/24*H;mc.fillStyle='#ff4757';mc.fillRect(40,0,18,ygr);
+  if(limOn){const ygr=Math.min(-gr,24)/24*H;mc.fillStyle='#ff4757';mc.fillRect(40,0,18,ygr)}
+  else if(am){mc.save();mc.fillStyle='#8e95a5';mc.font='bold 11px Menlo';mc.translate(53,H/2);mc.rotate(-Math.PI/2);mc.textAlign='center';mc.fillText('LIMITER OFF',0,0);mc.restore()}
   mc.fillStyle='#8e95a5';mc.font='9px Menlo';mc.fillText('in',6,H-3);mc.fillText('GR',42,H-3);
   [0,-3,-6,-12,-24].forEach(t=>{const y=-t/24*H;mc.fillRect(58,y,4,1);mc.fillText(String(t),63,Math.max(8,Math.min(H-12,y+3)))});
-  $('ro_lim').textContent=am?(am.daw.master.limiter?`in ${fx(pre,6,1)} · GR ${fx(gr,5,1)}`:'limiter off'):'–';
+  $('ro_lim').textContent=am?(am.daw.master.limiter?`in ${fx(pre,6,1)} · GR ${fx(gr,5,1)}`:`in ${fx(pre,6,1)} · OFF    `):'–';
   // GR history (8 s window ending at the playhead)
   const gc=$('cv_grh'),gdpr=fitCanvas(gc),g2=gc.getContext('2d'),GW=gc.width,GH=gc.height;g2.fillStyle='#0d0f13';g2.fillRect(0,0,GW,GH);
   g2.fillStyle='#2a303b';g2.font=`${9*gdpr}px Menlo`;[-1,-3,-6,-12].forEach(t=>{const y=-t/12*GH;g2.fillRect(0,y,GW,1);g2.fillStyle='#5b6372';g2.fillText(t+' dB',2,y-2);g2.fillStyle='#2a303b'});
