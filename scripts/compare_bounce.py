@@ -10,13 +10,13 @@ cfg = ML.load_config(ML.default_config()); p = cfg["resolved"][PRESET]
 st, du = cfg_ex = json.load(open(ML.default_config()))["excerpts"][EX]
 st = ML.parse_time(str(st)); du = float(du)
 tracks, _ = ER.preset_tracks(p, cfg["source_dir"], st, du, ML.read_audio)
-mx, _, _ = ER.map_to_reason(p, tracks)
+mx, _, _, buses = ER.map_to_reason(p, tracks)
 for t in tracks:   # start_ppq is set inside export(); recompute the same way
     t["delay_samples"] = round(t["delay_ms"] * 48)
 
 b = ML.read_audio(BOUNCE, 0, None).astype("float64"); sr = 48000
 t0 = time.time()
-pre = ER.model_render(tracks, mx)                       # channel strips + maximizer input gain, no limiting
+pre = ER.model_render(tracks, mx, buses=buses)                       # channel strips + maximizer input gain, no limiting
 print(f"channel model {time.time()-t0:.0f}s", flush=True)
 n = min(len(pre), len(b))
 

@@ -181,7 +181,7 @@ def add_recording_clip(track, trrf_t, tnmf_t, sasf_t, rec_id, sid, samples, chan
     return data, start_ppq + length
 
 
-def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
+def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None, buses=None):
     """tracks_spec: list of dict(name, samples (interleaved float32 array), channels, delay_ms,
     bp={idx: raw}, lp={idx: raw}, clip_volume=734). maximizer: None or dict(bp=..., lp=...)."""
     c, doc, mdoc, trrf_t, tnmf_t, sasf_t = load_templates()
@@ -208,11 +208,48 @@ def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
         set_params(d, ts.get("bp"), ts.get("lp"))
 
     # mixer plan / channel routing / rack (one rack per track)
-    plan = leaf(rs, b"PLAN"); plan.data = plan.data[:5] + struct.pack(">I", len(ids)) + b"".join(struct.pack(">I", i) for i in ids)
+    buses = buses or []
+    next_id = max(ids[1:] + [0]) + 1
+    bus_of = {}                                                      # track index -> bus id
+    bus_t = parse_list((TEMPL / "mix_channel_bus.iff").read_bytes())[0]
+    _, idoc = reasonspec.load(TEMPL / "stereo_imager.reason")
+    imager_t = next(d for d in group(idoc.rs10, b"DEVL").children if leaf(d, b"DESC").data.find(b"StereoImager") > 0)
+    cctl = group(rs, b"CCTL"); ctmpl = cctl.children[0]
+    bus_ids = []
+    for bspec in buses:
+        bid = next_id; next_id += 1; bus_ids.append(bid)
+        bd = copy.deepcopy(bus_t); set_identity(bd, bid, bspec["name"]); set_params(bd, bspec.get("bp"), bspec.get("lp"))
+        devl.children.append(bd)
+        for k in bspec["sources"]:
+            bus_of[k] = bid
+        if bspec.get("imager"):
+            im = copy.deepcopy(imager_t); iid = next_id; next_id += 1
+            set_identity(im, iid)
+            pp = leaf(group(im, b"PTCH"), b"PARM"); ver, b0, l0 = parm_decode(pp.data)
+            for k, v in bspec["imager"]["patch_bp"].items():
+                assert k in b0, k
+                b0[k] = v
+            pp.data = parm_encode(ver, b0, l0)
+            devl.children.append(im)
+            kids = bd.children
+            kids.insert(next(j for j, n in enumerate(kids) if isinstance(n, Chunk) and n.id == b"PARM"),
+                        Chunk(b"DCHL", prim.version(1, 0) + struct.pack(">II", 1, iid)))
+            # channel kAOToInsertFX L/R (0/1) -> imager in 0/1 ; imager out 0/1 -> channel kAIFromInsertFX L/R (0/1)
+            cctl.children += [cnct(iid, 0, bid, 0, template=ctmpl), cnct(iid, 1, bid, 1, template=ctmpl),
+                              cnct(bid, 0, iid, 0, template=ctmpl), cnct(bid, 1, iid, 1, template=ctmpl)]
+            bspec["imager_id"] = iid
+    order = []
+    for k, i in enumerate(ids):
+        order.append(i)
+        for bid, bspec in zip(bus_ids, buses):
+            if k == max(bspec["sources"]):
+                order.append(bid)
+    plan = leaf(rs, b"PLAN"); plan.data = plan.data[:5] + struct.pack(">I", len(order)) + b"".join(struct.pack(">I", i) for i in order)
     plcl = group(rs, b"PLCL"); pt = plcl.children[0]
-    plcl.children[:] = [Chunk(b"PLNC", pt.data[:5] + struct.pack(">II", i, MASTER_ID)) for i in ids]
+    plcl.children[:] = [Chunk(b"PLNC", pt.data[:5] + struct.pack(">II", i, bus_of.get(k, MASTER_ID))) for k, i in enumerate(ids)] + \
+                       [Chunk(b"PLNC", pt.data[:5] + struct.pack(">II", b, MASTER_ID)) for b in bus_ids]
     rack = leaf(rs, b"RACK"); r = rack.data
-    racks = [[0, MASTER_ID]] + [[i] for i in ids]
+    racks = [[0, MASTER_ID]] + [[i] for i in order]
     rack.data = r[:5] + struct.pack(">I", len(racks)) + b"".join(struct.pack(">I", len(x)) + b"".join(struct.pack(">I", i) for i in x) for x in racks) + r[-2:]
     # track counts
     tfdc = leaf(find_deep(rs, b"TFFM"), b"TFDC")
@@ -247,7 +284,7 @@ def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
     if maximizer is not None:
         mrs = mdoc.rs10
         mx = copy.deepcopy(next(d for d in group(mrs, b"DEVL").children if leaf(d, b"DESC").data.find(b"MClass Maximizer") > 0))
-        mx_id = max(ids[1:] + [0]) + 1
+        mx_id = next_id; next_id += 1
         set_identity(mx, mx_id)
         set_params(mx, maximizer.get("bp"), maximizer.get("lp"))
         if maximizer.get("patch_bp"):
@@ -263,7 +300,7 @@ def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
         kids = master.children
         assert master.find(b"DCHL") is None
         kids.insert(next(j for j, n in enumerate(kids) if isinstance(n, Chunk) and n.id == b"PARM"), dchl)
-        cctl = group(rs, b"CCTL"); tmpl = cctl.children[0]
+        tmpl = ctmpl
         cctl.children += [cnct(MASTER_ID, 16, mx_id, 0, template=tmpl), cnct(MASTER_ID, 17, mx_id, 1, template=tmpl),
                           cnct(mx_id, 0, MASTER_ID, 16, template=tmpl), cnct(mx_id, 1, MASTER_ID, 17, template=tmpl)]
 
@@ -338,6 +375,33 @@ def _mixlab_routing(t):
     return (1 + w) / 2 * gl + (1 - w) / 2 * gr, (1 - w) / 2 * gl + (1 + w) / 2 * gr
 
 
+def fit_imager(side_sos, sr: float = 48000.0):
+    """Choose MClass Stereo Imager (low width, crossover) so that side/mid of the imager ≈ the mixlab side EQ.
+    Returns (low_width_raw, xover_raw, H_mid(freqs), freqs, ratio_rms_db)."""
+    import numpy as np
+    from scipy import signal
+    import reason_devices as RD
+    freqs = np.geomspace(20, 20000, 240)
+    _, hs = signal.sosfreqz(side_sos, worN=freqs, fs=sr)
+    tgt = 20 * np.log10(np.abs(hs))
+    w = np.where(freqs < 2000, 1.0, 0.3)
+    z = np.exp(-2j * np.pi * freqs / sr)
+    best = None
+    for xr in range(0, 128):
+        a, b, g = RD.imager_lpf_coeffs(xr, sr)
+        lp = float(g) / (1 - float(a) * z + float(b) * z * z)
+        for hr in range(-12, 13):
+            hgm, hgs = RD.imager_mid_side_gains(hr)
+            for wr in range(-64, 64):
+                gm, gs = RD.imager_mid_side_gains(wr)
+                hm = hgm + (gm - hgm) * lp; hsd = hgs + (gs - hgs) * lp
+                err = np.sqrt(np.mean(((20 * np.log10(np.abs(hsd / hm)) - tgt) * w) ** 2))
+                if best is None or err < best[0]:
+                    best = (err, wr, xr, hm, hr)
+    err, wr, xr, hm, hr = best
+    return wr, xr, hm, freqs, float(err), hr
+
+
 def map_to_reason(preset: dict, tracks: list, sr: float = 48000.0):
     """Fill each track's channel PARM (input gain, Ø, pan, width, fader, EQ fit) and the Maximizer.
     Gains: per-track total = layer + input gain (+ master gain when no limiter) + pan-law compensation.
@@ -375,11 +439,34 @@ def map_to_reason(preset: dict, tracks: list, sr: float = 48000.0):
     else:
         master_rest = master_db
     freqs = np.geomspace(20, 20000, 240)
+    buses, bus_layer = [], {}
+    for L in preset["layers"]:
+        ssos = ML.layer_sos(L, "side_filters")
+        k = [j for j, t in enumerate(tracks) if t["layer"] == L["name"]]
+        if ssos is None or not k:
+            continue
+        wr, xr, hm, fq, ierr, hr = fit_imager(ssos, sr)
+        sos = ML.layer_sos(L)
+        _, h = signal.sosfreqz(sos, worN=freqs, fs=sr) if sos is not None else (None, np.ones_like(freqs))
+        tgt = 20 * np.log10(np.abs(h) + 1e-12) - 20 * np.log10(np.abs(hm))     # bus EQ also undoes the imager's mid change
+        fit = RD.fit_channel_eq(tgt, freqs, sr, weights=np.where(freqs < 30, 0.3, 1.0))
+        bp_, lp_ = RD.channel_params_to_parm(fit["params"])
+        ib = RD.IMAGER_BP
+        buses.append(dict(name=f"{L['name'].capitalize()} Bus", sources=k, bp=bp_, lp=lp_, layer=L["name"], params=fit["params"],
+                          imager=dict(patch_bp={ib["Low Width"]: wr, ib["High Width"]: hr, ib["X-Over Frequency"]: xr}),
+                          summary=dict(imager_low_width=wr, imager_high_width=hr, imager_low_factor=RD.imager_width_factor(wr),
+                                       imager_xover_hz=round(RD.imager_xover_hz(xr), 1), side_vs_mid_fit_rms_db=round(ierr, 2),
+                                       eq_fit_rms_db=round(fit["rms_db"], 2), eq_fit_max_db=round(fit["max_abs_db"], 2))))
+        bus_layer[L["name"]] = buses[-1]
+        notes.append(f"{L['name']}: side EQ → bus '{buses[-1]['name']}' with MClass Stereo Imager (low width {wr}, "
+                     f"x-over {RD.imager_xover_hz(xr):.0f} Hz) + bus EQ that restores the mid; side/mid fit {ierr:.2f} dB rms")
     for t in tracks:
         p = {}
         layer = next(L for L in preset["layers"] if L["name"] == t["layer"])
-        # EQ: fit the layer's RBJ chain to the channel EQ (once per layer)
-        if t["layer"] not in fits:
+        # EQ: fit the layer's RBJ chain to the channel EQ (once per layer); on the bus when the layer has one
+        if t["layer"] in bus_layer:
+            fits[t["layer"]] = None
+        elif t["layer"] not in fits:
             sos = ML.layer_sos(layer)
             if sos is None:
                 fits[t["layer"]] = None
@@ -416,24 +503,31 @@ def map_to_reason(preset: dict, tracks: list, sr: float = 48000.0):
         t["reason"] = dict(params=p, input_gain_db=RD.input_gain_db(g_raw), fader_db=RD.fader_db(f_raw),
                            pan=pan_raw if t["channels"] == 1 else 0, eq_fit_rms_db=None if fit is None else fit["rms_db"],
                            eq_fit_max_db=None if fit is None else fit["max_abs_db"])
-        if t.get("side_filters"):
-            notes.append(f"{t['name']}: side EQ (bass shuffle) not exported yet — needs a stereo bus with an MClass Stereo Imager")
-    return mx, notes, fits
+        if t.get("side_filters") and t["layer"] not in bus_layer:
+            notes.append(f"{t['name']}: side EQ not exported")
+    return mx, notes, fits, buses
 
 
-def model_render(tracks: list, mx: dict | None, sr: float = 48000.0, with_maximizer=False):
-    """Render the exported song with the reason_devices model (channel strips + optional Maximizer)."""
+def model_render(tracks: list, mx: dict | None, sr: float = 48000.0, with_maximizer=False, buses=None):
+    """Render the exported song with the reason_devices model (channel strips, buses + Imager, optional Maximizer)."""
     import numpy as np
     import reason_devices as RD
+    buses = buses or []
     n = max(len(t["samples"]) // t["channels"] + t["delay_samples"] for t in tracks)
     out = np.zeros((n, 2))
-    for t in tracks:
+    bus_in = [np.zeros((n, 2)) for _ in buses]
+    dest = {k: bi for bi, b in enumerate(buses) for k in b["sources"]}
+    for k, t in enumerate(tracks):
         x = np.frombuffer(t["samples"].tobytes(), dtype=np.float32).astype(float)
         if t["channels"] == 2:
             x = x.reshape(-1, 2)
         y = RD.channel_process(x, sr, t["reason"]["params"])
         d = t["delay_samples"]                                               # clip start (16-PPQ grid) + zero pad
-        out[d:d + len(y)] += y
+        (bus_in[dest[k]] if k in dest else out)[d:d + len(y)] += y
+    for b, xb in zip(buses, bus_in):
+        q = b["imager"]["patch_bp"]; ib = RD.IMAGER_BP
+        ins = lambda y, q=q: RD.imager_process(y, sr, q[ib["Low Width"]], q[ib["High Width"]], q[ib["X-Over Frequency"]])
+        out += RD.channel_process(xb, sr, b["params"], insert=ins)
     if mx is not None:
         pb = RD.MAXIMIZER_BP; q = mx["patch_bp"]
         g = RD.maximizer_input_gain_linear(q[pb["Input Gain"]]) * RD.maximizer_output_gain_linear(q[pb["Output Gain"]])

@@ -1041,9 +1041,10 @@ def cmd_export_reason(args):
     out = args.out or os.path.join(MIXLAB_HOME, "reason", f"{args.preset}_{int(start)}s_{int(dur)}s.reason")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     tracks, notes = ER.preset_tracks(p, cfg["source_dir"], start, dur, read_audio)
-    mx, n2, fits = ER.map_to_reason(p, tracks); notes += n2
-    res = ER.export(tracks, out, maximizer=mx)
-    rep = dict(path=res["path"], preset=args.preset, start=start, dur=dur, tracks=[], maximizer=mx and mx["summary"], notes=notes)
+    mx, n2, fits, buses = ER.map_to_reason(p, tracks); notes += n2
+    res = ER.export(tracks, out, maximizer=mx, buses=buses)
+    rep = dict(path=res["path"], preset=args.preset, start=start, dur=dur, tracks=[], maximizer=mx and mx["summary"],
+               buses=[dict(name=b["name"], sources=[tracks[k]["name"] for k in b["sources"]], eq=b["params"], **b["summary"]) for b in buses], notes=notes)
     for t in tracks:
         r = t["reason"]; q = r["params"]
         rep["tracks"].append(dict(name=t["name"], channels=t["channels"], clip_start_ppq=t["start_ppq"],
@@ -1054,7 +1055,7 @@ def cmd_export_reason(args):
                                   eq_fit_max_db=r["eq_fit_max_db"] and round(r["eq_fit_max_db"], 2)))
     if args.compare:   # Reason model (channel strips, maximizer input gain, no limiting) vs mixlab pre-limiter mix
         _, pre, _, _ = render_master(p, cfg["source_dir"], start, dur)
-        y = ER.model_render(tracks, mx)
+        y = ER.model_render(tracks, mx, buses=buses)
         n = min(len(y), len(pre)); a, b = pre[:n], y[:n]
         f, A = signal.welch(a, SR, nperseg=8192, axis=0); _, B = signal.welch(b, SR, nperseg=8192, axis=0)
         bands = {}
