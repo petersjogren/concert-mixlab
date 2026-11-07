@@ -38,6 +38,7 @@ body.analysing #summary,body.analysing #tonal,body.analysing #daw_body{opacity:.
   start <input id="start" size="7"> dur <input id="dur" size="5"> s
   <button id="analyze">Analyse</button>
   <label><input type="checkbox" id="auto" checked> auto</label>
+  <button id="rx_btn_top" title="Export the preset you are listening to (current excerpt) as a Reason 14 song">🎛 Export to Reason</button>
   <span id="busy">⟳ updating — numbers and audio below are from the previous settings</span>
   <span id="status">loading…</span>
 </header>
@@ -464,6 +465,7 @@ $('rx_btn').onclick=async()=>{
   }catch(e){o.innerHTML=`<span style="color:#ff6b81">Export failed: ${e.message||e}</span>`}
   finally{b.disabled=false}
 };
+$('rx_btn_top').onclick=()=>{$('daw').scrollIntoView({behavior:'smooth',block:'start'});$('rx_btn').click()};
 
 // ---------------------------------------------------------------- follow external edits (Claude Code)
 setInterval(async()=>{if(S.saving||S.dirty)return;try{const v=await api('/api/version');
