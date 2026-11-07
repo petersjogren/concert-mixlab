@@ -1033,6 +1033,40 @@ def cmd_daw(args):
     cfg = load_config(args.config); r = daw_recipe(cfg["resolved"][args.preset])
     print(json.dumps(r, indent=1) if args.json else daw_text(args.preset, r))
 
+def cmd_export_reason(args):
+    """Write the preset + excerpt as a Reason 14 song (audio tracks, channel strips, Maximizer)."""
+    import export_reason as ER
+    cfg = load_config(args.config); p = cfg["resolved"][args.preset]
+    start = parse_time(args.start); dur = args.dur or 60.0
+    out = args.out or os.path.join(MIXLAB_HOME, "reason", f"{args.preset}_{int(start)}s_{int(dur)}s.reason")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tracks, notes = ER.preset_tracks(p, cfg["source_dir"], start, dur, read_audio)
+    mx, n2, fits = ER.map_to_reason(p, tracks); notes += n2
+    res = ER.export(tracks, out, maximizer=mx)
+    rep = dict(path=res["path"], preset=args.preset, start=start, dur=dur, tracks=[], maximizer=mx and mx["summary"], notes=notes)
+    for t in tracks:
+        r = t["reason"]; q = r["params"]
+        rep["tracks"].append(dict(name=t["name"], channels=t["channels"], clip_start_ppq=t["start_ppq"],
+                                  clip_delay_ms=round(t["start_ppq"] / 15360 / 2 * 1000, 3), invert=bool(q.get("Invert Phase")),
+                                  input_gain_db=round(r["input_gain_db"], 2), fader_db=round(r["fader_db"], 2), pan=r["pan"],
+                                  width_raw=q.get("Width"), eq={k: v for k, v in q.items() if k not in ("Input Gain", "Level", "Pan", "Width", "Invert Phase")},
+                                  eq_fit_rms_db=r["eq_fit_rms_db"] and round(r["eq_fit_rms_db"], 2),
+                                  eq_fit_max_db=r["eq_fit_max_db"] and round(r["eq_fit_max_db"], 2)))
+    if args.compare:   # Reason model (channel strips, maximizer input gain, no limiting) vs mixlab pre-limiter mix
+        _, pre, _, _ = render_master(p, cfg["source_dir"], start, dur)
+        y = ER.model_render(tracks, mx)
+        n = min(len(y), len(pre)); a, b = pre[:n], y[:n]
+        f, A = signal.welch(a, SR, nperseg=8192, axis=0); _, B = signal.welch(b, SR, nperseg=8192, axis=0)
+        bands = {}
+        for lo, hi in [(20, 60), (60, 250), (250, 1000), (1000, 4000), (4000, 8000), (8000, 16000)]:
+            mk = (f >= lo) & (f < hi)
+            bands[f"{lo}-{hi}"] = [round(10 * math.log10(B[mk, c].sum() / A[mk, c].sum()), 2) for c in (0, 1)]
+        diff = b - a
+        rep["compare_reason_model_vs_mixlab"] = dict(
+            band_diff_db_LR=bands, null_db=round(10 * math.log10((diff ** 2).sum() / (a ** 2).sum()), 1),
+            rms_diff_db=round(10 * math.log10((b ** 2).sum() / (a ** 2).sum()), 2))
+    print(json.dumps(rep, indent=1))
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -1065,14 +1099,20 @@ def main():
     p.add_argument("--excerpt", nargs=3, metavar=("NAME", "START", "DUR"), help="save a named excerpt, e.g. --excerpt Kyrie 22:10 150")
     p = sp.add_parser("daw", help="plain DAW settings for a preset (EQ as Q, pan, faders, limiter)"); cfgarg(p)
     p.add_argument("--preset", required=True); p.add_argument("--json", action="store_true")
+    p = sp.add_parser("export-reason", help="write preset + excerpt as a Reason 14 song"); common(p)
+    p.add_argument("--excerpt", help="name from presets.json 'excerpts' (overrides --start/--dur)")
+    p.add_argument("--out"); p.add_argument("--compare", action="store_true", help="compare the Reason model with the mixlab render")
     a = ap.parse_args()
+    if getattr(a, "excerpt", None) and a.cmd == "export-reason":
+        ex = json.load(open(a.config)).get("excerpts", {})[a.excerpt]; a.start, a.dur = str(ex[0]), float(ex[1])
     if hasattr(a, "dur") and a.cmd != "state":
         st = read_state(a.config)
         if a.start is None: a.start = str(st.get("start", "0"))
         if a.dur is None: a.dur = float(st.get("dur", 60.0))
         if a.dur == 0: a.dur = None
     dict(report=cmd_report, render=cmd_render, ffmpeg=cmd_ffmpeg, verify=cmd_verify, metrics=cmd_metrics, list=cmd_list,
-         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state, source=cmd_source, daw=cmd_daw)[a.cmd](a)
+         show=cmd_show, set=cmd_set, clone=cmd_clone, delete=cmd_delete, state=cmd_state, source=cmd_source, daw=cmd_daw,
+         **{"export-reason": cmd_export_reason})[a.cmd](a)
 
 if __name__ == "__main__":
     main()

@@ -243,6 +243,12 @@ def export(tracks_spec, out_path, *, bpm=120_000, rate=48_000, maximizer=None):
         mx_id = max(ids[1:] + [0]) + 1
         set_identity(mx, mx_id)
         set_params(mx, maximizer.get("bp"), maximizer.get("lp"))
+        if maximizer.get("patch_bp"):
+            pp = leaf(group(mx, b"PTCH"), b"PARM"); ver, b0, l0 = parm_decode(pp.data)
+            for k, v in maximizer["patch_bp"].items():
+                assert k in b0, k
+                b0[k] = v
+            pp.data = parm_encode(ver, b0, l0)
         devl.children.append(mx)
         master = next(d for d in devl.children if devi_id(d) == MASTER_ID)
         mmaster = next(d for d in group(mrs, b"DEVL").children if devi_id(d) == MASTER_ID)
@@ -309,6 +315,124 @@ def preset_tracks(preset: dict, src_dir: str, start: float, dur: float, read_aud
                     notes.append(f"{name}: {gain_db:+.2f} dB exceeds clip-gain range, {rest:+.2f} dB not applied yet")
                 tracks.append(t)
     return tracks, notes
+
+
+# --- mixlab settings -> Reason device knobs --------------------------------------------------------
+
+def _mixlab_routing(t):
+    """mixlab (gL, gR) for a mono track after input pan (constant power) and layer width (M/S); linear,
+    excluding gain. Stereo tracks: None (handled by the channel Width knob)."""
+    import math
+    if t["channels"] != 1:
+        return None
+    th = (t["pan"] + 1) * math.pi / 4
+    gl, gr = math.cos(th), math.sin(th)
+    w = t["width"]
+    return (1 + w) / 2 * gl + (1 - w) / 2 * gr, (1 - w) / 2 * gl + (1 + w) / 2 * gr
+
+
+def map_to_reason(preset: dict, tracks: list, sr: float = 48000.0):
+    """Fill each track's channel PARM (input gain, Ø, pan, width, fader, EQ fit) and the Maximizer.
+    Gains: per-track total = layer + input gain (+ master gain when no limiter) + pan-law compensation.
+    Coarse part on Input Gain (0.286 dB steps), remainder on the fader (≈0.035 dB steps); clip gain 0 dB."""
+    import math
+    import numpy as np
+    from scipy import signal
+    import reason_devices as RD
+    import mixlab as ML
+    notes, fits = [], {}
+    m = preset.get("master", {})
+    lim_on = m.get("limiter_ceiling") is not None
+    master_db = m.get("gain_db", 0.0)
+    mx = None
+    if lim_on:
+        in_raw = RD.maximizer_gain_db_to_raw(master_db)
+        master_rest = master_db - 20 * math.log10(RD.maximizer_input_gain_linear(in_raw))
+        ceil = float(m["limiter_ceiling"])
+        out_raw = min(range(128), key=lambda r: abs(0.93 * RD.maximizer_output_gain_linear(r) - ceil))
+        att = min(RD.MAXIMIZER_ATTACK_MS, key=lambda k: abs(RD.MAXIMIZER_ATTACK_MS[k] - m.get("attack_ms", 5)))
+        rel = min((0, 1), key=lambda k: abs(RD.MAXIMIZER_RELEASE_MS[k] - m.get("release_ms", 50)))
+        pb = RD.MAXIMIZER_BP
+        mx = dict(patch_bp={pb["Input Gain"]: in_raw, pb["Limiter Enable"]: 1, pb["Look Ahead Enable"]: 1,
+                            pb["Attack Speed"]: att, pb["Release Speed"]: rel, pb["Output Gain"]: out_raw,
+                            pb["Soft Clip Enable"]: 0},
+                  summary=dict(input_gain_db=RD.maximizer_gain_db(in_raw), output_gain_db=RD.maximizer_gain_db(out_raw),
+                               ceiling_dbfs=20 * math.log10(0.93 * RD.maximizer_output_gain_linear(out_raw)),
+                               attack_ms=RD.MAXIMIZER_ATTACK_MS[att], release_ms=RD.MAXIMIZER_RELEASE_MS[rel], look_ahead=True))
+        notes.append(f"Maximizer: look-ahead limiter, attack {RD.MAXIMIZER_ATTACK_MS[att]} ms / release "
+                     f"{RD.MAXIMIZER_RELEASE_MS[rel]} ms (mixlab {m.get('attack_ms', 5)}/{m.get('release_ms', 50)} ms); "
+                     "L/R are limited independently in Reason")
+    else:
+        master_rest = master_db
+    freqs = np.geomspace(20, 20000, 240)
+    for t in tracks:
+        p = {}
+        layer = next(L for L in preset["layers"] if L["name"] == t["layer"])
+        # EQ: fit the layer's RBJ chain to the channel EQ (once per layer)
+        if t["layer"] not in fits:
+            sos = ML.layer_sos(layer)
+            if sos is None:
+                fits[t["layer"]] = None
+            else:
+                _, h = signal.sosfreqz(sos, worN=freqs, fs=sr)
+                tgt = 20 * np.log10(np.abs(h) + 1e-12)
+                wts = np.where(freqs < 30, 0.3, 1.0)
+                fits[t["layer"]] = RD.fit_channel_eq(tgt, freqs, sr, weights=wts)
+        fit = fits[t["layer"]]
+        if fit is not None:
+            p.update(fit["params"])
+        # pan / width and level compensation
+        if t["channels"] == 1:
+            gl, gr = _mixlab_routing(t)
+            ratio = math.atan2(gr, gl)
+            pan_raw = min(range(-100, 101), key=lambda r: abs(math.atan2(RD.pan_gains(r)[1], RD.pan_gains(r)[0]) - ratio))
+            lp_, rp_ = RD.pan_gains(pan_raw)
+            comp_db = 20 * math.log10(math.hypot(gl, gr) / math.hypot(lp_, rp_))
+            p.update({"Pan": pan_raw})
+        else:
+            p.update({"Pan": 0, "Width": RD.width_to_raw(min(1.0, t["width"]))})
+            comp_db = 0.0
+            if t["width"] > 1:
+                notes.append(f"{t['name']}: width {t['width']} > 1 not possible on a channel (max 100%)")
+        total = t["gain_db"] + master_rest + comp_db
+        g_raw = max(-64, min(63, round(total / (18 / 63))))
+        rest = total - 20 * math.log10(RD.input_gain_linear(g_raw))
+        f_raw = RD.fader_db_to_raw(rest)
+        p.update({"Input Gain": g_raw, "Level": f_raw, "Invert Phase": 1 if t["bp"].get(BP_INVERT) else 0})
+        if abs(RD.fader_db(f_raw) - rest) > 0.05:
+            notes.append(f"{t['name']}: gain {total:+.2f} dB out of range")
+        bp, lp = RD.channel_params_to_parm(p)
+        t["bp"], t["lp"], t["clip_volume"] = bp, lp, AU.UNITY_VOLUME
+        t["reason"] = dict(params=p, input_gain_db=RD.input_gain_db(g_raw), fader_db=RD.fader_db(f_raw),
+                           pan=pan_raw if t["channels"] == 1 else 0, eq_fit_rms_db=None if fit is None else fit["rms_db"],
+                           eq_fit_max_db=None if fit is None else fit["max_abs_db"])
+        if t.get("side_filters"):
+            notes.append(f"{t['name']}: side EQ (bass shuffle) not exported yet — needs a stereo bus with an MClass Stereo Imager")
+    return mx, notes, fits
+
+
+def model_render(tracks: list, mx: dict | None, sr: float = 48000.0, with_maximizer=False):
+    """Render the exported song with the reason_devices model (channel strips + optional Maximizer)."""
+    import numpy as np
+    import reason_devices as RD
+    n = max(len(t["samples"]) // t["channels"] + int(round(t["start_ppq"] / PPQ_PER_QUARTER / 2 * sr)) for t in tracks)
+    out = np.zeros((n, 2))
+    for t in tracks:
+        x = np.frombuffer(t["samples"].tobytes(), dtype=np.float32).astype(float)
+        if t["channels"] == 2:
+            x = x.reshape(-1, 2)
+        y = RD.channel_process(x, sr, t["reason"]["params"])
+        d = int(round(t["start_ppq"] / PPQ_PER_QUARTER / 2 * sr))            # 120 BPM: 2 quarters / s
+        out[d:d + len(y)] += y
+    if mx is not None:
+        pb = RD.MAXIMIZER_BP; q = mx["patch_bp"]
+        g = RD.maximizer_input_gain_linear(q[pb["Input Gain"]])
+        if with_maximizer:
+            out = RD.maximizer_process(out, sr, q[pb["Input Gain"]], 1, 1, q[pb["Attack Speed"]], q[pb["Release Speed"]],
+                                       q[pb["Output Gain"]], 0, 64)
+        else:
+            out = out * g
+    return out
 
 
 
