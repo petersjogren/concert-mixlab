@@ -121,6 +121,7 @@ Claude works on a **clone** of your preset, never on your originals. It uses `mi
   - master: gain into the limiter, ceiling, attack, release
   - *Copy as text* / *Download .txt*
   - loudness-match is monitoring only and never part of the settings
+- **🎛 Export to Reason** (in the DAW panel): writes the preset you are listening to, for the current excerpt, as a Reason 14 song in `~/.concert-mixlab/reason/` (unique file name), then shows every knob value, the fit errors and *Open in Reason* / *Show in Finder*. See [Export to Reason](#export-to-reason).
 - **Graphs and tables:** summary metrics, tonal-balance table coloured against the guide, master spectrum, change against the first preset, EQ curves, raw inputs, mic energy share, summation gain, correlation and side/mid per octave, vectorscopes, short-term loudness and limiter gain reduction, alignment table.
 - **Follows external changes:** if `presets.json` or `state.json` changes (from Claude, the CLI or an editor), the GUI reloads and re-analyses.
 
@@ -201,6 +202,7 @@ All commands run as `bin/mixlab <command>`. Inside Claude Code the same commands
 | `ffmpeg --preset P [--start 0 --dur 0] --out full.wav` | Print the equivalent ffmpeg command (`--dur 0` = whole file) |
 | `verify --preset P` | Null-test the Python DSP against ffmpeg |
 | `daw --preset P [--json]` | DAW recipe: track fader/pan, bus delay/EQ (Q)/width/fader, master gain + limiter |
+| `export-reason --preset P [--excerpt N \| --start --dur] [--out f.reason] [--compare]` | Write a Reason 14 song (see below); `--compare` adds the Reason-model-vs-mixlab check |
 
 `set` paths address layers by **name** and lists by **index**. Values are JSON, and `delete` removes an entry:
 
@@ -218,6 +220,26 @@ Render the whole concert with a preset:
 ```bash
 eval "$(bin/mixlab ffmpeg --preset try1 --start 0 --dur 0 --out ~/Desktop/concert_try1.wav)"
 ```
+
+## Export to Reason
+
+`export-reason` (or the GUI button) builds a Reason 14 (`RS1300`) song that sounds like the preset, using only Reason's own devices. Requires the [`reason_spec`](../reason_spec) library (`REASON_SPEC` env, default `~/GitHubProjects/reason_spec`).
+
+| mixlab | Reason |
+|---|---|
+| each input (mono) / stereo file | an audio track with the excerpt as an imported recording (48 kHz float) |
+| layer delay | clip start on a 16-PPQ grid + 0–24 leading zero samples: sample-exact (song tempo 120 BPM) |
+| Ø invert | channel *Invert Phase* |
+| input + layer gain, master gain | channel *Input Gain* (coarse) + fader (fine), Maximizer input gain |
+| pan + layer width (mono inputs) | channel pan, with Reason's +3 dB-at-the-sides pan law compensated |
+| width (stereo inputs) | channel *Width* (max 100%) |
+| layer EQ | least-squares fit to the channel EQ (HPF + 4 bands), typically ±0.2 dB |
+| side EQ (bass shuffle) | an output bus (Mix Channel) for the layer with an **MClass Stereo Imager** insert; the bus EQ also restores the mid that the Imager lowers |
+| limiter | **MClass Maximizer** on the master (look-ahead; attack 4/16/64 ms, release 150/400 ms — nearest is chosen) |
+
+How it was verified: `mixlab/reason_devices.py` ports the channel strip, Imager and Maximizer from the Reason source; two Reason bounces matched that model to **−78.8 dB** and **−79.7 dB** (channel strips + Maximizer gains; bus + Imager). `scripts/compare_bounce.py PRESET EXCERPT bounce.wav` repeats the check. Remaining differences to mixlab come from the devices themselves: the Imager's 2-band split vs a side shelf, the HF shelf near 16 kHz, and the Maximizer's coarse attack/release and unlinked L/R.
+
+Close an earlier export in Reason before bouncing a new one with the same name: re-opening an open file does not reload it (the GUI always writes a new file name).
 
 ## Files and data
 

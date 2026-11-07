@@ -115,6 +115,20 @@ class H(BaseHTTPRequestHandler):
                 ml.delete_preset(CFG, b["name"]); return self.send(200, versions())
             if u.path == "/api/state":
                 ml.write_state(CFG, **b); return self.send(200, versions())
+            if u.path == "/api/export_reason":
+                cfg = ml.load_config(CFG)
+                if b["preset"] not in cfg["resolved"]:
+                    return self.send(400, {"error": f"unknown preset {b['preset']}"})
+                rep = ml.export_reason_song(cfg, b["preset"], ml.parse_time(b["start"]), float(b["dur"]) or None,
+                                            compare=bool(b.get("compare", True)))
+                return self.send(200, rep)
+            if u.path == "/api/reveal":
+                import subprocess
+                path = os.path.realpath(b["path"])
+                if not path.startswith(os.path.realpath(os.path.join(ml.MIXLAB_HOME, "reason"))) or not path.endswith(".reason"):
+                    return self.send(400, {"error": "only exported songs can be opened"})
+                subprocess.Popen(["open", path] if b.get("open") else ["open", "-R", path])
+                return self.send(200, {"ok": True})
             if u.path == "/api/ffmpeg":
                 cfg = ml.load_config(CFG)
                 cmd = ml.ffmpeg_command(cfg["resolved"][b["preset"]], cfg["source_dir"], ml.parse_time(b["start"]),

@@ -1033,17 +1033,19 @@ def cmd_daw(args):
     cfg = load_config(args.config); r = daw_recipe(cfg["resolved"][args.preset])
     print(json.dumps(r, indent=1) if args.json else daw_text(args.preset, r))
 
-def cmd_export_reason(args):
-    """Write the preset + excerpt as a Reason 14 song (audio tracks, channel strips, Maximizer)."""
-    import export_reason as ER
-    cfg = load_config(args.config); p = cfg["resolved"][args.preset]
-    start = parse_time(args.start); dur = args.dur or 60.0
-    out = args.out or os.path.join(MIXLAB_HOME, "reason", f"{args.preset}_{int(start)}s_{int(dur)}s.reason")
+def export_reason_song(cfg, preset_name, start, dur, out=None, compare=False):
+    """Write preset + excerpt as a Reason 14 song; returns a JSON-able report (knob values, notes, optional
+    comparison of the Reason model with the mixlab render). Default file name is unique (timestamp) so an
+    older copy that is open in Reason is never silently reused."""
+    import export_reason as ER, time as _t
+    p = cfg["resolved"][preset_name]; dur = dur or 60.0
+    out = out or os.path.join(MIXLAB_HOME, "reason",
+                              f"{preset_name}_{int(start // 60)}m{int(start % 60):02d}s_{int(dur)}s_{_t.strftime('%H%M%S')}.reason")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     tracks, notes = ER.preset_tracks(p, cfg["source_dir"], start, dur, read_audio)
     mx, n2, fits, buses = ER.map_to_reason(p, tracks); notes += n2
     res = ER.export(tracks, out, maximizer=mx, buses=buses)
-    rep = dict(path=res["path"], preset=args.preset, start=start, dur=dur, tracks=[], maximizer=mx and mx["summary"],
+    rep = dict(path=res["path"], preset=preset_name, start=start, dur=dur, tracks=[], maximizer=mx and mx["summary"],
                buses=[dict(name=b["name"], sources=[tracks[k]["name"] for k in b["sources"]], eq=b["params"], **b["summary"]) for b in buses], notes=notes)
     for t in tracks:
         r = t["reason"]; q = r["params"]
@@ -1053,7 +1055,7 @@ def cmd_export_reason(args):
                                   width_raw=q.get("Width"), eq={k: v for k, v in q.items() if k not in ("Input Gain", "Level", "Pan", "Width", "Invert Phase")},
                                   eq_fit_rms_db=r["eq_fit_rms_db"] and round(r["eq_fit_rms_db"], 2),
                                   eq_fit_max_db=r["eq_fit_max_db"] and round(r["eq_fit_max_db"], 2)))
-    if args.compare:   # Reason model (channel strips, maximizer input gain, no limiting) vs mixlab pre-limiter mix
+    if compare:   # Reason model (channel strips, maximizer input gain, no limiting) vs mixlab pre-limiter mix
         _, pre, _, _ = render_master(p, cfg["source_dir"], start, dur)
         y = ER.model_render(tracks, mx, buses=buses)
         n = min(len(y), len(pre)); a, b = pre[:n], y[:n]
@@ -1066,7 +1068,12 @@ def cmd_export_reason(args):
         rep["compare_reason_model_vs_mixlab"] = dict(
             band_diff_db_LR=bands, null_db=round(10 * math.log10((diff ** 2).sum() / (a ** 2).sum()), 1),
             rms_diff_db=round(10 * math.log10((b ** 2).sum() / (a ** 2).sum()), 2))
-    print(json.dumps(rep, indent=1))
+    return rep
+
+def cmd_export_reason(args):
+    """Write the preset + excerpt as a Reason 14 song (audio tracks, channel strips, bus + Imager, Maximizer)."""
+    cfg = load_config(args.config)
+    print(json.dumps(export_reason_song(cfg, args.preset, parse_time(args.start), args.dur, args.out, args.compare), indent=1))
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

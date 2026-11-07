@@ -78,7 +78,8 @@ body.analysing #summary,body.analysing #tonal,body.analysing #daw_body{opacity:.
         <div class="note">Live meters show what you hear (active preset, after loudness-match). Limiter meters come from the render, synced to the playhead.</div></div>
     </div>
     <div class="card" id="daw"><h3><span>🎚 DAW settings — what you hear: <span class="big" id="daw_name">–</span></span>
-      <span><button id="daw_copy">Copy as text</button> <button id="daw_dl">Download .txt</button></span></h3><div id="daw_body" class="mut">Analyse and press play/select a preset.</div></div>
+      <span><button id="daw_copy">Copy as text</button> <button id="daw_dl">Download .txt</button> <button id="rx_btn" title="Write this preset + the current excerpt as a Reason 14 song (audio tracks, channel strips, bus + Stereo Imager, Maximizer)">🎛 Export to Reason</button></span></h3>
+      <div id="rx_out" class="card" style="display:none;margin:6px 0"></div><div id="daw_body" class="mut">Analyse and press play/select a preset.</div></div>
     <div class="card"><h3>Master summary</h3><div id="summary"></div><div class="note">Centroid ↑ = brighter. L/R corr 0.3–0.7 ≈ natural orchestral image; near 0 = very wide (hole-in-middle risk). GR = limiter gain reduction.</div></div>
     <div class="card"><h3>Tonal balance (dB relative to 0.5–2 kHz) vs rough guide</h3><div id="tonal"></div></div>
     <div class="grid">
@@ -441,6 +442,28 @@ function renderDaw(n){
 }
 $('daw_copy').onclick=async()=>{if(!S.dawText)return;await navigator.clipboard.writeText(S.dawText);$('daw_copy').textContent='Copied ✓';setTimeout(()=>$('daw_copy').textContent='Copy as text',1500)};
 $('daw_dl').onclick=()=>{if(!S.dawText)return;const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([S.dawText],{type:'text/plain'}));a.download=`daw-settings-${$('daw_name').textContent}.txt`;a.click()};
+
+// ---------------------------------------------------------------- Export to Reason
+$('rx_btn').onclick=async()=>{
+  const name=A.active||S.edit?.name;if(!name)return;const o=$('rx_out'),b=$('rx_btn');
+  if(S.dirty){clearTimeout(S.timer);await save()}
+  o.style.display='block';o.innerHTML=`⟳ Writing <b style="color:${colorOf(name)}">${name}</b> (${$('start').value}, ${$('dur').value} s) as a Reason song… this takes 10–40 s.`;
+  b.disabled=true;
+  try{
+    const r=await api('/api/export_reason',{preset:name,start:$('start').value,dur:+$('dur').value,compare:true});
+    const c=r.compare_reason_model_vs_mixlab;
+    const tr=r.tracks.map(t=>`<tr><td class="l">${t.name}</td><td>${t.channels==2?'stereo':'mono'}</td><td>${fx(t.delay_ms,6,2)} ms</td><td>${t.invert?'Ø':''}</td><td>${f1(t.input_gain_db)}</td><td>${f1(t.fader_db)}</td><td>${t.pan}</td><td>${t.eq_fit_rms_db==null?(r.buses.some(b=>b.sources.includes(t.name))?'on bus':'–'):'±'+t.eq_fit_max_db}</td></tr>`).join('');
+    const bu=r.buses.map(b=>`<div><b>${b.name}</b> ← ${b.sources.join(', ')} · Stereo Imager low ${b.imager_low_width} / high ${b.imager_high_width} @ ${b.imager_xover_hz} Hz · bus EQ fit ±${b.eq_fit_max_db} dB</div>`).join('');
+    const mx=r.maximizer?`<div><b>Maximizer</b> in ${f1(r.maximizer.input_gain_db)} dB · out ${f1(r.maximizer.output_gain_db)} dB · ceiling ${r.maximizer.ceiling_dbfs.toFixed(2)} dBFS · ${r.maximizer.attack_ms}/${r.maximizer.release_ms} ms, look-ahead</div>`:'<div><b>Maximizer</b> off (limiter off in this preset)</div>';
+    const cmp=c?`<div class="note">Reason model vs mixlab (before limiter): level ${f1(c.rms_diff_db)} dB · per band ${Object.entries(c.band_diff_db_LR).map(([k,v])=>`${k}: ${f1((v[0]+v[1])/2)}`).join(' · ')} dB</div>`:'';
+    o.innerHTML=`<b>✓ Reason song written</b> <span class="mut">${r.path}</span><div style="margin:6px 0"><button id="rx_open">Open in Reason</button> <button id="rx_reveal">Show in Finder</button></div>`+
+      `<table><tr><th class="l">track</th><th>ch</th><th>delay</th><th>Ø</th><th>input dB</th><th>fader dB</th><th>pan</th><th>EQ fit</th></tr>${tr}</table>${bu}${mx}${cmp}`+
+      (r.notes.length?`<div class="note">${r.notes.map(n=>'• '+n).join('<br>')}</div>`:'');
+    $('rx_open').onclick=()=>api('/api/reveal',{path:r.path,open:true});
+    $('rx_reveal').onclick=()=>api('/api/reveal',{path:r.path});
+  }catch(e){o.innerHTML=`<span style="color:#ff6b81">Export failed: ${e.message||e}</span>`}
+  finally{b.disabled=false}
+};
 
 // ---------------------------------------------------------------- follow external edits (Claude Code)
 setInterval(async()=>{if(S.saving||S.dirty)return;try{const v=await api('/api/version');
