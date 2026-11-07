@@ -51,6 +51,8 @@ body.analysing #summary,body.analysing #tonal,body.analysing #daw_body{opacity:.
   <div id="side">
     <div class="card"><h3>Compare</h3><div id="compare" class="chk"></div></div>
     <div class="card"><h3>Edit preset <span><select id="edit"></select></span></h3>
+      <label class="note" style="display:block;margin:0 0 6px"><input type="checkbox" id="follow" checked> editor follows the preset I'm listening to (1–9 buttons)</label>
+      <div id="editwarn" class="note" style="display:none;color:#ffd32a;margin-bottom:6px"></div>
       <div style="display:flex;gap:5px;margin-bottom:6px"><button id="clone">Clone…</button><button id="del">Delete</button><button id="ffm">ffmpeg cmd</button></div>
       <input id="desc" style="width:100%" placeholder="description">
       <div class="note">Edits save to presets.json immediately (preset becomes standalone, no <i>extends</i>). Claude Code can edit the same file via <code>mixlab.py set</code>; the GUI follows.</div>
@@ -142,8 +144,8 @@ function ctl(parent,label,val,o,set){
 }
 const FDEF={peak:{f:1000,oct:1,g:0},highshelf:{f:6000,g:0,slope:0.7},lowshelf:{f:200,g:0,slope:0.7},highpass:{f:30,q:0.707},lowpass:{f:18000,q:0.707}};
 function renderEditor(){
-  const ed=$('editor');ed.innerHTML='';if(!S.edit)return;const p=S.edit.p;$('desc').value=p.description||'';
-  const m=p.master=p.master||{};const mc=document.createElement('div');mc.className='card';mc.innerHTML='<h3>Master</h3>';
+  const ed=$('editor');ed.innerHTML='';if(!S.edit)return;const p=S.edit.p;$('desc').value=p.description||'';updateEditWarn();
+  const m=p.master=p.master||{};const mc=document.createElement('div');mc.className='card';mc.innerHTML=`<h3><span>Master · <span style="color:${colorOf(S.edit.name)}">${S.edit.name}</span></span></h3>`;
   ctl(mc,'gain dB',m.gain_db??0,{min:-24,max:24,step:0.1},v=>m.gain_db=v);
   const lim=document.createElement('div');lim.className='row';lim.innerHTML=`<label>limiter</label><label><input type="checkbox" ${m.limiter_ceiling?'checked':''}> on</label><span></span>`;
   mc.appendChild(lim);
@@ -160,7 +162,7 @@ function renderEditor(){
   ed.appendChild(mc);updateLimWarn();
   p.layers.forEach(L=>{
     const c=document.createElement('div');c.className='card';
-    c.innerHTML=`<h3><span>Layer: ${L.name}</span><label><input type="checkbox" ${L.mute?'checked':''}> mute</label></h3>`;
+    c.innerHTML=`<h3><span>Layer: ${L.name} · <span style="color:${colorOf(S.edit.name)}">${S.edit.name}</span></span><label><input type="checkbox" ${L.mute?'checked':''}> mute</label></h3>`;
     c.querySelector('h3 input').onchange=e=>{L.mute=e.target.checked;changed()};
     ctl(c,'gain dB',L.gain_db??0,{min:-30,max:18,step:0.1},v=>L.gain_db=v);
     ctl(c,'width',L.width??1,{min:0,max:2,step:0.01},v=>L.width=v);
@@ -201,7 +203,11 @@ async function save(){
     if($('auto').checked)scheduleAnalyze(100)}catch(e){status('save failed: '+e.message)}finally{S.saving--}
 }
 $('desc').onchange=()=>{S.edit.p.description=$('desc').value;changed()};
-$('edit').onchange=()=>{const n=$('edit').value;S.edit={name:n,p:JSON.parse(JSON.stringify(S.cfg.resolved[n]))};renderEditor();pushState()};
+function editPreset(n){if(!S.cfg.resolved[n])return;if(S.dirty){clearTimeout(S.timer);save()}  // flush pending edit of the old preset first
+  S.edit={name:n,p:JSON.parse(JSON.stringify(S.cfg.resolved[n]))};$('edit').value=n;renderEditor();pushState()}
+function updateEditWarn(){const w=$('editwarn');if(!w)return;const diff=S.edit&&A.active&&S.edit.name!==A.active;
+  w.style.display=diff?'block':'none';if(diff)w.innerHTML=`⚠ You are editing <b>${S.edit.name}</b> but listening to <b>${A.active}</b>. Changes below don't affect what you hear.`}
+$('edit').onchange=()=>editPreset($('edit').value);
 $('clone').onclick=async()=>{const n=prompt('New preset name',S.edit.name+'_v2');if(!n)return;const p=cleanPreset(S.edit.p);
   S.ver=await api('/api/preset',{name:n,preset:p});S.compare.push(n);S.edit={name:n,p};await loadConfig(false);pushState();scheduleAnalyze(50)};
 $('del').onclick=async()=>{if(!confirm('Delete preset '+S.edit.name+'?'))return;try{S.ver=await api('/api/delete',{name:S.edit.name});S.edit=null;await loadConfig(false);pushState();scheduleAnalyze(50)}catch(e){alert(e.message)}};
@@ -271,7 +277,7 @@ async function loadAudio(d){
   Object.keys(A.bufs).forEach(n=>{if(!want.includes(n)){delete A.bufs[n];delete A.hashes[n]}});
   if(!A.active||!want.includes(A.active))A.active=want[want.length>1?1:0];
   A.dur=Math.max(...Object.values(A.bufs).map(b=>b.duration));
-  status($('status').textContent.replace(' · loading audio…',' · audio ready'));renderPlayButtons();renderDaw(A.active);
+  status($('status').textContent.replace(' · loading audio…',' · audio ready'));renderPlayButtons();renderDaw(A.active);updateEditWarn();
   if(A.playing){const pos=curPos();stop(false);play(pos)}
 }
 function matchGain(n){if(!$('lmatch').checked||!S.data)return 1;const L=Object.fromEntries(S.data.presets.map(p=>[p.name,p.metrics.lufs]));const t=Math.min(...Object.values(L));return Math.pow(10,(t-L[n])/20)}
@@ -284,7 +290,8 @@ function play(pos=A.off){if(!Object.keys(A.bufs).length)return;A.ctx.resume();A.
 function stop(resetBtn=true){A.off=curPos();A.srcs.forEach(s=>{try{s.stop()}catch(e){}});A.srcs=[];A.playing=false;if(resetBtn){$('play').textContent='▶ Play';$('play').classList.remove('on')}}
 function renderPlayButtons(){$('pbtns').innerHTML=(S.data?.presets||[]).map((p,i)=>`<button class="pbtn ${p.name==A.active?'on':''}" data-n="${p.name}" style="border-color:${colorOf(p.name)}">${i+1} ${p.name}</button>`).join(' ');
   $('pbtns').querySelectorAll('button').forEach(b=>b.onclick=()=>select(b.dataset.n))}
-function select(n){A.active=n;if(A.playing)setGains();renderPlayButtons();renderDaw(n)}
+function select(n){A.active=n;if(A.playing)setGains();renderPlayButtons();renderDaw(n);
+  if($('follow').checked&&S.edit?.name!==n)editPreset(n);else updateEditWarn()}
 $('play').onclick=()=>A.playing?stop():play();
 $('lmatch').onchange=()=>A.playing&&setGains();
 $('seek').oninput=()=>{const pos=$('seek').value/1000*A.dur;if(A.playing){stop(false);play(pos)}else A.off=pos};
