@@ -23,7 +23,10 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;pad
 .note{color:var(--mut);font-size:11px;margin:4px 0}
 #monitor{position:sticky;top:0;z-index:4;display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
 .mbox{display:flex;flex-direction:column;align-items:center;gap:3px}.mbox .lbl{color:var(--mut);font-size:11px}
-.mbox canvas{background:#0d0f13;border:1px solid var(--bd);border-radius:4px}.ro{font:12px ui-monospace,Menlo,monospace;color:var(--fg)}
+.mbox canvas{background:#0d0f13;border:1px solid var(--bd);border-radius:4px}.ro{font:12px ui-monospace,Menlo,monospace;color:var(--fg);white-space:pre;font-variant-numeric:tabular-nums}
+.mbox .ro{display:inline-block;text-align:center}#ro_corr{width:44px}#ro_lr{width:84px}#ro_lim{width:150px}#ro_info{white-space:pre-wrap}
+#time{display:inline-block;min-width:250px;font:12px ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:pre}
+.spechd{display:flex;justify-content:space-between;align-items:center;gap:8px}.spechd label{color:var(--mut);font-size:11px}
 .ro b{color:var(--acc)}#daw table td,#daw table th{font-size:12px}#daw h4{margin:10px 0 4px;font-size:12px;color:var(--acc)}
 #daw .big{font-size:15px;font-weight:600}.pill{display:inline-block;padding:1px 7px;border-radius:9px;background:#2c313c;margin-left:6px;font-size:11px}
 </style></head><body>
@@ -59,9 +62,14 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#111;pad
       <div class="mbox"><span class="lbl">Correlation</span><canvas id="cv_corr" width="44" height="220"></canvas><span class="ro" id="ro_corr">–</span></div>
       <div class="mbox"><span class="lbl">Output L / R</span><canvas id="cv_lr" width="70" height="220"></canvas><span class="ro" id="ro_lr">–</span></div>
       <div class="mbox"><span class="lbl">Limiter in · GR</span><canvas id="cv_lim" width="90" height="220"></canvas><span class="ro" id="ro_lim">–</span></div>
-      <div class="mbox" style="flex:1;min-width:260px;align-items:stretch"><span class="lbl">Limiter gain reduction, last 8 s</span>
-        <canvas id="cv_grh" width="420" height="110" style="width:100%"></canvas>
-        <div class="ro" id="ro_info" style="margin-top:6px;line-height:1.6"></div>
+      <div class="mbox" style="flex:1;min-width:340px;align-items:stretch">
+        <div class="spechd"><span class="lbl">Spectrum (live) <span id="spec_mode_lbl"></span></span>
+          <span><label><input type="checkbox" id="spec_rel" checked> relative to 0.5–2 kHz (+ guide &amp; long-term)</label>
+          <label><input type="checkbox" id="spec_hold" checked> peak hold</label></span></div>
+        <canvas id="cv_spec" height="150" style="width:100%;height:150px"></canvas>
+        <span class="lbl">Limiter gain reduction, last 8 s</span>
+        <canvas id="cv_grh" height="56" style="width:100%;height:56px"></canvas>
+        <div class="ro" id="ro_info" style="margin-top:4px;line-height:1.5"></div>
         <div class="note">Live meters show what you hear (active preset, after loudness-match). Limiter meters come from the render, synced to the playhead.</div></div>
     </div>
     <div class="card" id="daw"><h3><span>🎚 DAW settings — what you hear: <span class="big" id="daw_name">–</span></span>
@@ -259,15 +267,53 @@ $('lmatch').onchange=()=>A.playing&&setGains();
 $('seek').oninput=()=>{const pos=$('seek').value/1000*A.dur;if(A.playing){stop(false);play(pos)}else A.off=pos};
 document.addEventListener('keydown',e=>{if(['INPUT','SELECT'].includes(e.target.tagName)&&e.target.type!='range'&&e.target.type!='checkbox')return;
   if(e.code=='Space'){e.preventDefault();A.playing?stop():play()}const k=+e.key;if(k>=1&&k<=9&&S.data?.presets[k-1])select(S.data.presets[k-1].name)});
-setInterval(()=>{if(A.dur){const p=curPos();$('time').textContent=`${fmtT(p)} / ${fmtT(A.dur)}  (concert ${fmtT((S.data?parseT($('start').value):0)+p)})`;if(document.activeElement!==$('seek'))$('seek').value=1000*p/A.dur}},200);
+setInterval(()=>{if(A.dur){const p=curPos();$('time').textContent=`${fmtT(p).padStart(6)} / ${fmtT(A.dur).padStart(6)}  (concert ${fmtT((S.data?parseT($('start').value):0)+p).padStart(6)})`;if(document.activeElement!==$('seek'))$('seek').value=1000*p/A.dur}},200);
 const parseT=t=>String(t).split(':').reduce((a,v)=>a*60+(+v),0);
 
 // ---------------------------------------------------------------- live meters
 function bus(){
   if(!A.bus){A.bus=A.ctx.createGain();A.bus.connect(A.ctx.destination);const sp=A.ctx.createChannelSplitter(2);A.bus.connect(sp);
     A.anL=A.ctx.createAnalyser();A.anR=A.ctx.createAnalyser();A.anL.fftSize=A.anR.fftSize=2048;sp.connect(A.anL,0);sp.connect(A.anR,1);
-    A.tL=new Float32Array(2048);A.tR=new Float32Array(2048)}
+    A.tL=new Float32Array(2048);A.tR=new Float32Array(2048);
+    A.anSL=A.ctx.createAnalyser();A.anSR=A.ctx.createAnalyser();A.anSL.fftSize=A.anSR.fftSize=8192;A.anSL.smoothingTimeConstant=A.anSR.smoothingTimeConstant=0.8;
+    A.anSL.minDecibels=A.anSR.minDecibels=-140;A.anSL.maxDecibels=A.anSR.maxDecibels=0;sp.connect(A.anSL,0);sp.connect(A.anSR,1);
+    A.fL=new Float32Array(4096);A.fR=new Float32Array(4096)}
   return A.bus}
+// fixed-width number: sign always shown, padded so live readouts never change width
+const fx=(v,w,d)=>{if(v==null||!isFinite(v))return '–'.padStart(w);const r=Math.abs(v).toFixed(d),z=+r===0;const s=(z?' ':v>=0?'+':'−')+r;return s.padStart(w)};
+function fitCanvas(c){const dpr=window.devicePixelRatio||1,w=Math.round(c.clientWidth*dpr),h=Math.round(c.clientHeight*dpr);if(c.width!==w||c.height!==h){c.width=w;c.height=h}return dpr}
+const SP={hold:null,ref:null,lastT:0};
+function drawSpec(){
+  const c=$('cv_spec'),dpr=fitCanvas(c),g=c.getContext('2d'),W=c.width,H=c.height,rel=$('spec_rel').checked;
+  g.fillStyle='#0d0f13';g.fillRect(0,0,W,H);
+  const fmin=20,fmax=20000,lx=f=>Math.log(f/fmin)/Math.log(fmax/fmin)*W;
+  const [lo,hi]=rel?[-60,15]:[-120,-20],yy=v=>H-(Math.min(Math.max(v,lo),hi)-lo)/(hi-lo)*H;
+  // grid
+  g.font=`${9*dpr}px Menlo`;g.lineWidth=1;
+  [31.5,63,125,250,500,1000,2000,4000,8000,16000].forEach(f=>{const x=lx(f);g.fillStyle='#232833';g.fillRect(x,0,1,H);g.fillStyle='#5b6372';g.fillText(f<1000?String(f):`${f/1000}k`,x+2*dpr,H-3*dpr)});
+  for(let v=Math.ceil(lo/10)*10;v<=hi;v+=10){const y=yy(v);g.fillStyle=v===0&&rel?'#3a4252':'#1d222b';g.fillRect(0,y,W,1);g.fillStyle='#5b6372';g.fillText(String(v),2*dpr,y-2*dpr)}
+  $('spec_mode_lbl').textContent=rel?'· dB rel. 0.5–2 kHz':'· analyser dB';
+  const am=activeMeter();
+  if(rel&&S.data){ // guide + long-term spectrum of the active preset
+    g.strokeStyle='rgba(255,255,255,0.8)';g.setLineDash([5*dpr,4*dpr]);g.lineWidth=1.5*dpr;g.beginPath();
+    S.data.guide.forEach(([a,b,v])=>{g.moveTo(lx(a),yy(v));g.lineTo(lx(b),yy(v))});g.stroke();g.setLineDash([]);
+    if(am){g.strokeStyle='rgba(230,232,238,0.45)';g.lineWidth=1.5*dpr;g.beginPath();am.spectrum.f.forEach((f,i)=>{const x=lx(f),y=yy(am.spectrum.db[i]);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke()}
+  }
+  if(!(A.playing&&A.anSL))return;
+  A.anSL.getFloatFrequencyData(A.fL);A.anSR.getFloatFrequencyData(A.fR);
+  const N=A.fL.length,bw=A.ctx.sampleRate/2/N,cols=Math.floor(W/(2*dpr)),pts=new Float32Array(cols);
+  const pw=new Float32Array(N);for(let i=0;i<N;i++)pw[i]=(Math.pow(10,A.fL[i]/10)+Math.pow(10,A.fR[i]/10))/2;
+  for(let k=0;k<cols;k++){ // average power per log-spaced column (interpolate when a column is narrower than a bin)
+    const f0=fmin*Math.pow(fmax/fmin,k/cols),f1=fmin*Math.pow(fmax/fmin,(k+1)/cols);let a=Math.floor(f0/bw),b=Math.ceil(f1/bw);
+    let s=0,n=0;for(let i=Math.max(1,a);i<Math.min(N,Math.max(b,a+1));i++){s+=pw[i];n++}pts[k]=10*Math.log10((n?s/n:pw[Math.min(N-1,Math.max(1,a))])+1e-30)}
+  let ref=0;if(rel){let s=0,n=0;for(let i=Math.floor(500/bw);i<Math.ceil(2000/bw);i++){s+=pw[i];n++}
+    const r=10*Math.log10(s/n+1e-30);SP.ref=SP.ref==null?r:0.9*SP.ref+0.1*r;ref=SP.ref} // smoothed reference so the curve doesn't bounce
+  if(!SP.hold||SP.hold.length!==cols)SP.hold=new Float32Array(cols).fill(-200);
+  const now=performance.now(),dt=(now-SP.lastT)/1000;SP.lastT=now;
+  g.beginPath();g.moveTo(0,H);for(let k=0;k<cols;k++){const v=pts[k]-ref;g.lineTo(k*2*dpr,yy(v));SP.hold[k]=Math.max(v,SP.hold[k]-6*Math.min(dt,0.1))}
+  g.lineTo(W,H);g.closePath();const grd=g.createLinearGradient(0,0,0,H);const col=colorOf(A.active);grd.addColorStop(0,col+'cc');grd.addColorStop(1,col+'22');g.fillStyle=grd;g.fill();
+  if($('spec_hold').checked){g.strokeStyle='#ffd32a';g.lineWidth=1*dpr;g.beginPath();for(let k=0;k<cols;k++){const y=yy(SP.hold[k]);k?g.lineTo(k*2*dpr,y):g.moveTo(0,y)}g.stroke()}
+}
 const M={corr:0,pk:[-90,-90],hold:[-90,-90],holdT:[0,0],rms:[-90,-90]};
 const db=v=>20*Math.log10(Math.max(v,1e-9));
 function meterBar(c,x,w,val,lo,hi,color){const h=c.canvas.height,y=h-(Math.min(Math.max(val,lo),hi)-lo)/(hi-lo)*h;c.fillStyle=color;c.fillRect(x,y,w,h-y);return y}
@@ -292,14 +338,14 @@ function drawMeters(){
   const cc=$('cv_corr').getContext('2d'),H=220;cc.clearRect(0,0,44,H);cc.fillStyle='#1b1f27';cc.fillRect(8,0,18,H);
   const y0=H/2,yc=H/2-M.corr*H/2;cc.fillStyle=M.corr>=0.3?'#2ed573':M.corr>=0?'#ffd32a':'#ff4757';cc.fillRect(8,Math.min(y0,yc),18,Math.abs(yc-y0)||1);
   cc.fillStyle='#8e95a5';cc.font='9px Menlo';cc.fillText('+1',28,9);cc.fillText('0',30,y0+3);cc.fillText('−1',28,H-2);cc.fillRect(8,y0,18,1);
-  $('ro_corr').textContent=M.corr.toFixed(2);
+  $('ro_corr').textContent=fx(M.corr,5,2);
   // L/R output
   const lc=$('cv_lr').getContext('2d');lc.clearRect(0,0,70,H);const lo=-60,hi=0;
   [0,1].forEach(k=>{const x=4+k*22;lc.fillStyle='#1b1f27';lc.fillRect(x,0,18,H);
     meterBar(lc,x,18,M.rms[k],lo,hi,M.rms[k]>-6?'#ff9f43':'#2ed573');const yp=H-(Math.min(Math.max(M.pk[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle='#e6e8ee';lc.fillRect(x,yp,18,2);
     const yh=H-(Math.min(Math.max(M.hold[k],lo),hi)-lo)/(hi-lo)*H;lc.fillStyle=M.hold[k]>-1?'#ff4757':'#ffd32a';lc.fillRect(x,yh,18,1)});
   scaleTicks(lc,48,lo,hi,[0,-6,-12,-24,-36,-48]);
-  $('ro_lr').textContent=`pk ${Math.max(...M.hold).toFixed(1)}`;
+  $('ro_lr').textContent=`pk ${fx(Math.max(...M.hold),6,1)}`;
   // limiter (from render, synced to playhead)
   const mc=$('cv_lim').getContext('2d');mc.clearRect(0,0,90,H);const am=activeMeter();
   const ceil=am?.daw?.master?.limiter?.ceiling_dbfs;let gr=0,pre=-90,idx=0;
@@ -310,16 +356,17 @@ function drawMeters(){
   const ygr=Math.min(-gr,24)/24*H;mc.fillStyle='#ff4757';mc.fillRect(40,0,18,ygr);
   mc.fillStyle='#8e95a5';mc.font='9px Menlo';mc.fillText('in',6,H-3);mc.fillText('GR',42,H-3);
   [0,-3,-6,-12,-24].forEach(t=>{const y=-t/24*H;mc.fillRect(58,y,4,1);mc.fillText(String(t),63,Math.max(8,Math.min(H-12,y+3)))});
-  $('ro_lim').textContent=am?(am.daw.master.limiter?`in ${pre.toFixed(1)} · GR ${gr.toFixed(1)}`:'limiter off'):'–';
+  $('ro_lim').textContent=am?(am.daw.master.limiter?`in ${fx(pre,6,1)} · GR ${fx(gr,5,1)}`:'limiter off'):'–';
   // GR history (8 s window ending at the playhead)
-  const gc=$('cv_grh'),g2=gc.getContext('2d'),GW=gc.width,GH=gc.height;g2.fillStyle='#0d0f13';g2.fillRect(0,0,GW,GH);
-  g2.fillStyle='#2a303b';g2.font='9px Menlo';[-1,-3,-6,-12].forEach(t=>{const y=-t/12*GH;g2.fillRect(0,y,GW,1);g2.fillStyle='#5b6372';g2.fillText(t+' dB',2,y-2);g2.fillStyle='#2a303b'});
+  const gc=$('cv_grh'),gdpr=fitCanvas(gc),g2=gc.getContext('2d'),GW=gc.width,GH=gc.height;g2.fillStyle='#0d0f13';g2.fillRect(0,0,GW,GH);
+  g2.fillStyle='#2a303b';g2.font=`${9*gdpr}px Menlo`;[-1,-3,-6,-12].forEach(t=>{const y=-t/12*GH;g2.fillRect(0,y,GW,1);g2.fillStyle='#5b6372';g2.fillText(t+' dB',2,y-2);g2.fillStyle='#2a303b'});
   if(am){const n=8*am.meter.rate,st=idx-n;g2.fillStyle='rgba(255,71,87,0.75)';
     for(let i=0;i<n;i++){const v=am.meter.gr[st+i];if(v==null||v>-0.05)continue;const x=i/n*GW,h=Math.min(-v,12)/12*GH;g2.fillRect(x,0,GW/n+0.5,h)}
     let mx=0;for(let i=Math.max(0,st);i<=idx;i++)mx=Math.min(mx,am.meter.gr[i]??0);
     const m=am.metrics,mg=matchGain(am.name);
-    $('ro_info').innerHTML=`listening: <b>${am.name}</b> · ${m.lufs.toFixed(1)} LUFS · max GR (8 s) <b>${mx.toFixed(1)} dB</b> · excerpt GR&gt;1 dB ${m.gr_time_pct_over_1db.toFixed(1)}% of time`+
+    $('ro_info').innerHTML=`listening: <b>${am.name}</b> · ${fx(m.lufs,5,1)} LUFS · max GR (8 s) <b>${fx(mx,5,1)} dB</b> · excerpt GR&gt;1 dB ${m.gr_time_pct_over_1db.toFixed(1).padStart(5)}% of time`+
       (mg!==1?`<br><span class="mut">monitor loudness-match ${db(mg).toFixed(1)} dB (not part of the settings)</span>`:'')}
+  try{drawSpec()}catch(e){console.error(e)}
   requestAnimationFrame(drawMeters);
 }
 requestAnimationFrame(drawMeters);

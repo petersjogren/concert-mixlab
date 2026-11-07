@@ -32,7 +32,7 @@ You recorded a concert with a couple of microphones, say a spaced pair near the 
 |---|---|
 | 🎛 **Preset-based mixing** | Layers of mics with pan, width, delay, an EQ chain and gain, plus a master limiter. Presets can inherit from each other. |
 | 📈 **Analysis** | Spectrum against a tonal guide, EQ curves, each mic's share of the energy per octave, coherent/cancelling summation, L/R correlation and width per octave, vectorscope, LUFS/peak/crest, limiter activity, GCC-PHAT time alignment |
-| 📟 **Live meters** | Vectorscope with persistence, correlation meter, L/R peak/RMS with hold, limiter input + gain-reduction meters and an 8-second GR history, all following what you hear |
+| 📟 **Live meters** | Spectrum analyser (relative view with guide + long-term overlay, peak hold), vectorscope with persistence, correlation meter, L/R peak/RMS with hold, limiter input + gain-reduction meters and an 8-second GR history, all following what you hear |
 | 🎚 **DAW recipe** | A panel (and `mixlab daw`) listing the exact settings of the preset you're listening to: track fader/pan, bus delay/EQ (as Q)/width/fader, master gain and limiter. Copy or download it as text. |
 | 🎧 **Gapless A/B playback** | All presets play in sync. Switch with keys 1–9, optionally loudness-matched so you judge tone, not volume. Edits update the audio while it plays. |
 | 🤖 **Claude-drivable** | A skill plus slash commands let Claude clone a preset, try changes, measure them and put the result in your GUI for you to listen to |
